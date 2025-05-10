@@ -16,7 +16,8 @@
 
 from decimal import Decimal
 
-from strategy import MACDStrategy, MACDStrategyConfig
+from strategy import MACDStrategy
+from strategy import MACDStrategyConfig
 
 from examples.utils.data import prepare_demo_data_sh000300_futures_1min
 from nautilus_trader.backtest.engine import BacktestEngine
@@ -40,7 +41,6 @@ log = Logger(__name__)
 
 
 if __name__ == "__main__":
-
     # ----------------------------------------------------------------------------------
     # Step 1: Configure and Create the Backtest Engine
     # ----------------------------------------------------------------------------------
@@ -57,11 +57,13 @@ if __name__ == "__main__":
     # 2. Prepare market data
     # ----------------------------------------------------------------------------------
 
-    prepared_data: dict = prepare_demo_data_sh000300_futures_1min()
+    # Load multiple instruments
+    symbols = ["SH000300", "SZ399001", "SZ399006"]  # Example universe
+    prepared_data: dict = prepare_demo_data_sh000300_futures_1min(symbols)
     venue_name: str = prepared_data["venue_name"]
-    hs300_instrument: Instrument = prepared_data["instrument"]
+    instruments: list[Instrument] = prepared_data["instruments"]
     bar_type_1min: BarType = prepared_data["bar_type_1min"]
-    hs300_1min_bars_list: list[Bar] = prepared_data["bars_list"]
+    all_bars: list[list[Bar]] = prepared_data["bars"]
 
     # ----------------------------------------------------------------------------------
     # 3. Configure trading environment
@@ -78,8 +80,10 @@ if __name__ == "__main__":
     )
 
     # Add instrument and market data to the engine
-    engine.add_instrument(hs300_instrument)
-    engine.add_data(hs300_1min_bars_list)
+    # Add multiple instruments and data
+    for instrument, bars in zip(instruments, all_bars):
+        engine.add_instrument(instrument)
+        engine.add_data(bars)
 
     # ----------------------------------------------------------------------------------
     # 4. Configure and use Data Catalog
@@ -89,8 +93,9 @@ if __name__ == "__main__":
     data_catalog = ParquetDataCatalog("./data_catalog")
 
     # Write data to the catalog
-    data_catalog.write_data([hs300_instrument])  # Store instrument definition(s)
-    data_catalog.write_data(hs300_1min_bars_list)  # Store bar data
+    data_catalog.write_data(instruments)  # Store all instrument definitions
+    for bars in all_bars:
+        data_catalog.write_data(bars)  # Store all bars data
 
     # Read and analyze data from the catalog
     # - Retrieve all instrument definitions
@@ -117,11 +122,10 @@ if __name__ == "__main__":
     # 5. Configure and run strategy
     # ----------------------------------------------------------------------------------
 
-    # print("##################",hs300_1min_bars_list)
-    macd_strategy = MACDStrategy(config=MACDStrategyConfig(hs300_instrument.id,bar_type_1min))
-    # Create and register the strategy
-    # strategy = MACDStrategy(bar_type_1min=hs300_1min_bartype)
-    engine.add_strategy(macd_strategy)
+    # Create strategy instances for all instruments
+    strategies = [MACDStrategy(config=MACDStrategyConfig(instrument.id, bar_type_1min)) for instrument in instruments]
+    for strategy in strategies:
+        engine.add_strategy(strategy)
 
     # Execute the backtest
     engine.run()

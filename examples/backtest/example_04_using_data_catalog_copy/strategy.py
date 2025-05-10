@@ -67,14 +67,9 @@ class MACDStrategy(Strategy):
         self.signal_period = config.signal_period
 
         # 初始化指标
-        self.macd = MovingAverageConvergenceDivergence(
-            fast_period=self.fast_period,
-            slow_period=self.slow_period,
-            signal_period=self.signal_period
-        )
+        self.macd = MovingAverageConvergenceDivergence(fast_period=self.fast_period, slow_period=self.slow_period, signal_period=self.signal_period)
         # self.macd = MovingAverageConvergenceDivergence(12, 26, 9)
         # self.register_indicator_for_bars(bar_type, self.macd)
-
 
         # 记录持仓状态
         self.position = None

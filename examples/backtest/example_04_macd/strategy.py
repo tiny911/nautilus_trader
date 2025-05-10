@@ -15,21 +15,21 @@
 
 import datetime as dt
 
+import numpy as np
+
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.config import StrategyConfig
-
-from nautilus_trader.indicators.macd import MovingAverageConvergenceDivergence
-
-from nautilus_trader.trading.strategy import Strategy
-
 from nautilus_trader.core.datetime import unix_nanos_to_dt
-from nautilus_trader.model import BarType, Quantity
+from nautilus_trader.indicators.macd import MovingAverageConvergenceDivergence
 from nautilus_trader.model import Bar
-from nautilus_trader.model import Position
+from nautilus_trader.model import BarType
 from nautilus_trader.model import InstrumentId
-from nautilus_trader.model.enums import PriceType
+from nautilus_trader.model import Position
+from nautilus_trader.model import Quantity
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import PositionSide
+from nautilus_trader.model.enums import PriceType
+from nautilus_trader.trading.strategy import Strategy
 
 
 class MACDStrategyConfig(StrategyConfig, frozen=True):
@@ -37,8 +37,14 @@ class MACDStrategyConfig(StrategyConfig, frozen=True):
     bar_type_1min: BarType
     fast_period: int = 12
     slow_period: int = 26
-    trading_side = 10_000
+    base_trade_size: int = 10_000
     enter_threshold: float = 0.00010
+    follow_step: float = 0.00005
+    max_follow_steps: int = 5
+    follow_risk_multiplier: float = 0.5
+    volatility_window: int = 20
+    max_leverage: float = 3.0
+    risk_per_trade: float = 0.02
 
 
 # Create a subclass of Strategy class
@@ -50,10 +56,15 @@ class MACDStrategy(Strategy):
         self.macd = MovingAverageConvergenceDivergence(
             fast_period=config.fast_period,
             slow_period=config.slow_period,
+            signal_period=9,  # 添加标准信号线周期
             price_type=PriceType.MID
         )
         self.instrument_id = config.instrument_id
-        self.trade_size = Quantity.from_int(config.trading_side)
+        self.base_trade_size = Quantity.from_int(config.base_trade_size)
+        self.volatility_window = config.volatility_window
+        self.max_leverage = config.max_leverage
+        self.risk_per_trade = config.risk_per_trade
+        self.returns = []
 
         self.position: Position | None = None
         self.enter_threshold = config.enter_threshold
@@ -71,7 +82,6 @@ class MACDStrategy(Strategy):
         self.log.info(f"My MACD strategy started at {self.start_time}")
 
     def on_bar(self, bar: Bar):
-
         self.count_processed_bars += 1
 
         self.macd.handle_bar(bar)
@@ -81,54 +91,86 @@ class MACDStrategy(Strategy):
         self.check_for_entry()
         self.check_for_exit()
 
-    def check_for_entry(self):
-        if self.macd.value >= self.enter_threshold:
-            # If already in Long position do nothing
-            if self.position and self.position.side == PositionSide.LONG:
-                return
-            # Else make order
-            order = self.order_factory.market(
-                instrument_id=self.instrument_id,
-                order_side=OrderSide.BUY,
-                quantity=self.trade_size
-            )
-            self.submit_order(order)
+    def calculate_volatility(self) -> float:
+        if len(self.returns) >= 2:
+            return np.std(self.returns[-self.volatility_window :])
+        return 0.0
 
-        elif self.macd.value < -self.enter_threshold:
-            # If already in Short poisition do nothing
-            if self.position and self.position.side == PositionSide.SHORT:
-                return
-            # Else make order
-            order = self.order_factory.market(
-                instrument_id=self.instrument_id,
-                order_side=OrderSide.SELL,
-                quantity=self.trade_size
-            )
-            self.submit_order(order)
+    def calculate_position_size(self) -> Quantity:
+        equity = self.cache.account_balance().total.as_f64_c()
+        volatility = self.calculate_volatility()
+        risk_amount = equity * self.risk_per_trade
+
+        # 计算跟随步数
+        current_value = abs(self.macd.value)
+        steps = min(int((current_value - self.enter_threshold) / self.config.follow_step), self.config.max_follow_steps)
+        steps = max(steps, 0)  # 确保不小于0
+
+        # 动态调整风险系数
+        adjusted_risk = 1 + self.config.follow_risk_multiplier * steps
+        size = (risk_amount * adjusted_risk) / (volatility + 1e-6)
+
+        # 应用杠杆限制
+        max_size = equity * self.max_leverage / self.cache.last_quote().as_f64_c()
+        return Quantity.from_f64(min(size, max_size))
+
+    def check_for_entry(self):
+        current_value = self.macd.value
+        if abs(current_value) < self.enter_threshold:
+            return
+
+        # 计算目标步数
+        steps = min(int((abs(current_value) - self.enter_threshold) / self.config.follow_step), self.config.max_follow_steps)
+        steps = max(steps, 0)
+
+        # 计算基础仓位
+        base_size = self.base_trade_size.as_double()
+        target_qty = base_size * (1 + self.config.follow_risk_multiplier * steps)
+
+        # 获取当前持仓
+        current_qty = 0.0
+        if self.position:
+            current_qty = abs(self.position.quantity.as_double())
+
+        # 需要调整的仓位量
+        delta_qty = target_qty - current_qty
+        if delta_qty <= 0:
+            return
+
+        position_size = Quantity.from_f64(delta_qty)
+
+        # 根据信号方向下单
+        if current_value >= self.enter_threshold:
+            if not self.position or self.position.side != PositionSide.LONG:
+                order = self.order_factory.market(instrument_id=self.instrument_id, order_side=OrderSide.BUY, quantity=position_size)
+                self.submit_order(order)
+
+        elif current_value < -self.enter_threshold:
+            if not self.position or self.position.side != PositionSide.SHORT:
+                order = self.order_factory.market(instrument_id=self.instrument_id, order_side=OrderSide.SELL, quantity=position_size)
+                self.submit_order(order)
 
     def check_for_exit(self):
-        # If we are in a Short position, exit when MACD value is positive
-        if self.macd.value >= 0:
+        # Exit short positions when MACD crosses above signal line
+        if self.macd.value > self.macd.signal:
             if self.position and self.position.side == PositionSide.SHORT:
                 self.close_position(self.position)
-
-        # If we are in a Long position, exit when MACD value is negative
-        else:
+                
+        # Exit long positions when MACD crosses below signal line
+        elif self.macd.value < self.macd.signal:
             if self.position and self.position.side == PositionSide.LONG:
                 self.close_position(self.position)
 
     def on_end(self):
-
         self.end_time = dt.datetime.now()
         self.close_all_positions(instrument_id=self.config.instrument_id)
         self.unsubscribe_bars()
 
-        self.log.info(f"My MACD strategy finnished at {self.end_time}")
+        self.log.info(f"My MACD strategy finished at {self.end_time}")
         self.log.info(f"Total count of 1 day bars: {self.count_processed_bars} ")
 
 
 class DemoStrategy(Strategy):
-
     def __init__(self, bar_type_1min: BarType):
         super().__init__()
 
