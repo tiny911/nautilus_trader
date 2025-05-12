@@ -20,6 +20,7 @@ import numpy as np
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.datetime import unix_nanos_to_dt
+from nautilus_trader.indicators.ema import ExponentialMovingAverage
 from nautilus_trader.indicators.macd import MovingAverageConvergenceDivergence
 from nautilus_trader.model import Bar
 from nautilus_trader.model import BarType
@@ -35,6 +36,7 @@ from nautilus_trader.trading.strategy import Strategy
 class MACDStrategyConfig(StrategyConfig, frozen=True):
     instrument_id: InstrumentId
     bar_type_1min: BarType
+    bar_type_sp500: BarType  # 新增标普500指数配置
     fast_period: int = 12
     slow_period: int = 26
     base_trade_size: int = 10_000
@@ -77,19 +79,38 @@ class MACDStrategy(Strategy):
     def on_start(self):
         self.start_time = dt.datetime.now()
 
+        # 订阅交易品种和标普500指数数据
         self.subscribe_bars(self.bar_type_1min)
+        self.subscribe_bars(self.bar_type_sp500)
 
         self.log.info(f"My MACD strategy started at {self.start_time}")
 
     def on_bar(self, bar: Bar):
-        self.count_processed_bars += 1
+        # 处理标普500指数数据
+        if bar.bar_type == self.bar_type_sp500:
+            self.ema50.update(bar.close.as_f64_c())
+            self.ema200.update(bar.close.as_f64_c())
+            
+            # 更新市场趋势判断
+            if self.ema50.value > self.ema200.value:
+                self.market_trend = "上涨"
+            elif self.ema50.value < self.ema200.value:
+                self.market_trend = "下跌"
+            else:
+                self.market_trend = "中性"
+            return
 
+        # 原交易品种数据处理
+        self.count_processed_bars += 1
         self.macd.handle_bar(bar)
         if not self.macd.initialized:
             return
 
-        self.check_for_entry()
-        self.check_for_exit()
+        # 只在趋势有利时交易
+        if (self.market_trend == "上涨" and self.macd.value > 0) or \
+           (self.market_trend == "下跌" and self.macd.value < 0):
+            self.check_for_entry()
+            self.check_for_exit()
 
     def calculate_volatility(self) -> float:
         if len(self.returns) >= 2:
@@ -115,11 +136,20 @@ class MACDStrategy(Strategy):
         return Quantity.from_f64(min(size, max_size))
 
     def check_for_entry(self):
+        # 根据市场趋势调整入场阈值
+        adjusted_threshold = self.enter_threshold
+        if self.market_trend == "上涨" and self.macd.value > 0:
+            adjusted_threshold *= 0.8  # 牛市降低入场门槛
+        elif self.market_trend == "下跌" and self.macd.value < 0:
+            adjusted_threshold *= 0.8  # 熊市降低入场门槛
+        elif self.market_trend == "中性":
+            adjusted_threshold *= 1.2  # 震荡市提高入场门槛
+
         current_value = self.macd.value
-        if abs(current_value) < self.enter_threshold:
+        if abs(current_value) < adjusted_threshold:
             return
 
-        # 计算目标步数
+        # 计算目标步数（根据市场趋势调整）
         steps = min(int((abs(current_value) - self.enter_threshold) / self.config.follow_step), self.config.max_follow_steps)
         steps = max(steps, 0)
 
@@ -155,7 +185,7 @@ class MACDStrategy(Strategy):
         if self.macd.value > self.macd.signal:
             if self.position and self.position.side == PositionSide.SHORT:
                 self.close_position(self.position)
-                
+
         # Exit long positions when MACD crosses below signal line
         elif self.macd.value < self.macd.signal:
             if self.position and self.position.side == PositionSide.LONG:

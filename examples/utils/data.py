@@ -16,11 +16,11 @@
 
 import pandas as pd
 from sqlalchemy import create_engine
-from nautilus_trader.model.identifiers import InstrumentId
 
 from nautilus_trader import TEST_DATA_DIR
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.persistence.wranglers import BarDataWrangler
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 
@@ -34,13 +34,13 @@ class FundamentalDataLoader:
     def get_fundamentals(self, instrument_id: InstrumentId) -> dict:
         """Retrieve fundamental data for a given instrument"""
         query = f"""
-        SELECT 
-            pe_ratio, 
-            pb_ratio, 
-            roe, 
+        SELECT
+            pe_ratio,
+            pb_ratio,
+            roe,
             market_cap,
             dividend_yield
-        FROM fundamentals 
+        FROM fundamentals
         WHERE symbol = '{instrument_id.symbol}'
         """
         try:
