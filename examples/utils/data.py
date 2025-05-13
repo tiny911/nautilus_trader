@@ -14,13 +14,21 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from pathlib import Path
+
 import pandas as pd
 from sqlalchemy import create_engine
 
-from nautilus_trader import TEST_DATA_DIR
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import Symbol
+from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.instruments import Equity
+from nautilus_trader.model.objects import Price
+from nautilus_trader.model.objects import Quantity
+from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
 from nautilus_trader.persistence.wranglers import BarDataWrangler
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 
@@ -59,20 +67,6 @@ class FundamentalDataLoader:
             return {}
 
 
-def prepare_demo_data_eurusd_futures_1min_test():
-    # Define exchange name
-    VENUE_NAME = "XCME"
-
-    # CSV file containing 1-minute bars instrument data above
-    csv_file_path = rf"{TEST_DATA_DIR}/xcme/6EH4.{VENUE_NAME}_1min_bars_20240101_20240131.csv.gz"
-
-    # Load raw data from CSV file and restructure them into required format for BarDataWrangler
-    df = pd.read_csv(csv_file_path, header=0, index_col=False)
-    df = df.reindex(columns=["timestamp_utc", "open", "high", "low", "close", "volume"])
-    print(df.columns)
-    print(df.head(3))
-
-
 def prepare_demo_data_sh000300_futures_1min():
     # Define exchange name
     VENUE_NAME = "SZSE"
@@ -88,6 +82,8 @@ def prepare_demo_data_sh000300_futures_1min():
 
     # Load raw data from CSV file and restructure them into required format for BarDataWrangler
     df = pd.read_parquet(csv_file_path, engine="pyarrow")
+    print(df.columns)
+    print(df.head(3))
     df = df.rename(columns={"dt": "timestamp"})
     df = df.rename(columns={"vol": "volume"})
     df = df.reindex(columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -120,7 +116,7 @@ def prepareNautilusTraderData_1min():
         venue=VENUE_NAME,
     )
 
-    # CSV file containing 1-minute bars instrument data above
+    # parquet file containing 1-minute bars instrument data above
     csv_file_path = "/home/tiny/github/CZSC投研数据/A股主要指数/000300.SH.parquet"
 
     # Load raw data from CSV file and restructure them into required format for BarDataWrangler
@@ -145,3 +141,79 @@ def prepareNautilusTraderData_1min():
         "bar_type_1min": SH000300_1MIN_BARTYPE,
         "bars_list": bars_list,
     }
+
+
+def process_data(df):
+    df = df.rename(columns={"dt": "timestamp"})
+    df = df.rename(columns={"vol": "volume"})
+    df = df.reindex(columns=["timestamp", "open", "high", "low", "close", "volume"])
+    print(df.columns)
+    df = df.set_index("timestamp")
+
+    # Define exchange name
+    VENUE_NAME = "SZSE"
+
+    # Instrument definition
+    symbol="000300.SH" # df.Symbol
+    venue=VENUE_NAME
+
+    Equity_INSTRUMENT = Equity(
+            instrument_id=InstrumentId(symbol=Symbol(symbol), venue=Venue(venue)),
+            raw_symbol=Symbol(symbol),
+            currency=USD,
+            price_precision=2,
+            price_increment=Price.from_str("0.01"),
+            lot_size=Quantity.from_int(100),
+            isin="US0378331005",
+            ts_event=0,
+            ts_init=0,
+        )
+
+    # Define bar type
+    BARTYPE = BarType.from_str(f"{Equity_INSTRUMENT.id}-1-MINUTE-LAST-EXTERNAL")
+
+    # Convert DataFrame rows into Bar objects
+    wrangler = BarDataWrangler(BARTYPE, Equity_INSTRUMENT)
+    bars_list: list[Bar] = wrangler.process(df)
+
+    # Create a Data Catalog (folder will be created if it doesn't exist)
+    data_catalog = ParquetDataCatalog("./data_catalog")
+
+    # Write data to the catalog
+    data_catalog.write_data([Equity_INSTRUMENT])  # Store instrument definition(s)
+    data_catalog.write_data(bars_list)  # Store bar data
+
+def process_czsc_data(directory_path):
+
+    directory = Path(directory_path)
+    parquet_files = directory.glob("*.parquet")
+    
+    results = []
+    for file in parquet_files:
+        try:
+            # Load raw data from parquet file and restructure them into required format for BarDataWrangler
+            df = pd.read_parquet(file, engine="pyarrow")
+            df = df.rename(columns={"dt": "timestamp"})
+            df = df.rename(columns={"vol": "volume"})
+            df = df.reindex(columns=["timestamp", "open", "high", "low", "close", "volume"])
+            print(df.columns)
+            df = df.set_index("timestamp")
+
+            file_result = process_data(df)
+            file_result['文件名'] = file.name
+            results.append(file_result)
+            print(f"处理完成: {file.name}")
+        except Exception as e:
+            print(f"处理失败 {file.name}: {str(e)}")
+    
+    if results:
+        result_df = pd.DataFrame(results)
+        print("\n处理结果汇总:")
+        print(result_df)
+        return result_df
+    else:
+        print("没有成功处理任何文件")
+        return None
+
+# 使用示例
+process_czsc_data("/path/to/your/csv/files")

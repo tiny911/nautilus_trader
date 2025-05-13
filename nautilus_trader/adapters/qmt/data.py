@@ -19,6 +19,7 @@ The `data` module provides QMT data integration with Nautilus Trader.
 """
 
 from datetime import datetime
+
 import pandas as pd
 import pytz
 
@@ -28,7 +29,6 @@ from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
-from nautilus_trader.persistence.wranglers import BarDataWrangler
 
 
 class QMTDataParser:
@@ -56,7 +56,7 @@ class QMTDataParser:
             The converted Nautilus Bar.
         """
         bar_type = BarType.from_str(f"{instrument_id}-1-MINUTE-LAST-EXTERNAL")
-        
+
         return Bar(
             bar_type=bar_type,
             open=Price(qmt_bar["open"], precision=precision),
@@ -114,7 +114,7 @@ class QMTDataLoader:
         """
         self.qmt_path = qmt_path
         self._initialize_qmt()
-    
+
     def _initialize_qmt(self):
         """
         Initialize QMT connection.

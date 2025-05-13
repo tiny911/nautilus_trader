@@ -21,7 +21,6 @@ An example of running the MACD strategy with QMT integration.
 import asyncio
 import os
 import sys
-from decimal import Decimal
 
 from nautilus_trader.adapters.qmt.client import QMTDataClient
 from nautilus_trader.adapters.qmt.config import QMTDataClientConfig
@@ -34,17 +33,13 @@ from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import TradingNodeConfig
 from nautilus_trader.examples.strategies.macd import MACDStrategy
 from nautilus_trader.examples.strategies.macd import MACDStrategyConfig
-from nautilus_trader.live.data_engine import LiveDataEngine
-from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.currencies import CNY
+from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.identifiers import AccountId
-from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import StrategyId
-from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Money
-from nautilus_trader.model.data import BarType
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 
 
