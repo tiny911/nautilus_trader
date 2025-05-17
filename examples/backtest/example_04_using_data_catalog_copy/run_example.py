@@ -16,6 +16,9 @@
 
 from decimal import Decimal
 
+from strategy import MACDStrategy
+from strategy import MACDStrategyConfig
+
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.enums import LogColor
@@ -49,23 +52,7 @@ if __name__ == "__main__":
     )
     engine = BacktestEngine(config=engine_config)
 
-    # ----------------------------------------------------------------------------------
-    # 3. Configure trading environment
-    # ----------------------------------------------------------------------------------
 
-    # # Set up the trading venue with a margin account
-    # engine.add_venue(
-    #     venue=Venue(venue_name),
-    #     oms_type=OmsType.NETTING,  # Netting: positions are netted against each other
-    #     account_type=AccountType.MARGIN,  # Margin account: allows trading with leverage
-    #     starting_balances=[Money(1_000_000, USD)],  # Initial account balance of $1,000,000 USD
-    #     base_currency=USD,  # Account base currency is USD
-    #     default_leverage=Decimal(1),  # No leverage is used (1:1)
-    # )
-
-    # # Add instrument and market data to the engine
-    # engine.add_instrument(hs300_instrument)
-    # engine.add_data(hs300_1min_bars_list)
 
     # ----------------------------------------------------------------------------------
     # 4. Configure and use Data Catalog
@@ -77,36 +64,98 @@ if __name__ == "__main__":
     # Read and analyze data from the catalog
     # - Retrieve all instrument definitions
     all_instruments = data_catalog.instruments()
+
     log.info(f"All instruments:\n{all_instruments[1]}", color=LogColor.YELLOW)
 
+    equity = all_instruments[1]
+
+    log.info(f"instrument id:\n{equity.id}", color=LogColor.YELLOW)
+
+    data_cls = type(equity)
+    
 
 
-    # - Get all available bars
-    all_bars = data_catalog.bars()
-    log.info(f"All bars count: {len(all_bars)}", color=LogColor.YELLOW)
+    instru = data_catalog.query(data_cls=data_cls, instrument_ids=[equity.id])
 
-    # # - Get specific bars with date range filter
-    # # filtered_bars = data_catalog.bars(
-    # #     bar_types=[str(hs300_1min_bartype)],
-    # #     start="2024-01-10",  # Filter start date
-    # #     end="2024-01-15",  # Filter end date
-    # # )
-    # # log.info(f"Bars between Jan 10-15: {len(filtered_bars)}", color=LogColor.YELLOW)
+    log.info(f"instru :\n{instru}", color=LogColor.YELLOW)
+
+    # # - Get all available bars
+    # all_bars = data_catalog.bars()
+    # log.info(f"All bars count: {len(all_bars)}", color=LogColor.YELLOW)
+
+    # Define bar type
+    barType = BarType.from_str(f"{equity.id}-1-MINUTE-LAST-EXTERNAL")
+    # - Get specific bars with date range filter
+    filtered_bars = data_catalog.bars(
+        bar_types=[str(barType)],
+        # start="2024-01-10",  # Filter start date
+        # end="2024-01-15",  # Filter end date
+    )
+    log.info(f"Bars between Jan 10-15: {len(filtered_bars)}", color=LogColor.YELLOW)
+
+
+     # ----------------------------------------------------------------------------------
+    # 3. Configure trading environment
+    # ----------------------------------------------------------------------------------
+
+    # # Set up the trading venue with a margin account
+    venue_name = "SZSE"
+    engine.add_venue(
+        venue=Venue(venue_name),
+        oms_type=OmsType.NETTING,  # Netting: positions are netted against each other
+        account_type=AccountType.MARGIN,  # Margin account: allows trading with leverage
+        starting_balances=[Money(1_000_000, USD)],  # Initial account balance of $1,000,000 USD
+        base_currency=USD,  # Account base currency is USD
+        default_leverage=Decimal(1),  # No leverage is used (1:1)
+    )
+
+    # Add instrument and market data to the engine
+    engine.add_instrument(equity)
+    engine.add_data(filtered_bars)
 
     # # - List all available data types
     # data_types_in_catalog = data_catalog.list_data_types()
     # log.info(f"Data types stored in catalog\n{data_types_in_catalog}", color=LogColor.YELLOW)
 
-    # # ----------------------------------------------------------------------------------
-    # # 5. Configure and run strategy
-    # # ----------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------
+    # 5. Configure and run strategy
+    # ----------------------------------------------------------------------------------
 
-    # # # Create and register the strategy
-    # # strategy = DemoStrategy(bar_type_1min=hs300_1min_bartype)
-    # # engine.add_strategy(strategy)
+    # Configure your strategy
+    # config = EMACrossLongOnlyConfig(
+    #     instrument_id=AAPL_XNAS.id,
+    #     bar_type=BarType.from_str(f"{AAPL_XNAS.id}-1-MINUTE-LAST-EXTERNAL"),
+    #     trade_size=Decimal(100),
+    #     fast_ema_period=10,
+    #     slow_ema_period=20,
+    # )
 
-    # # Execute the backtest
-    # engine.run()
+    # # Instantiate and add your strategy
+    # strategy = EMACrossLongOnly(config=config)
+    # engine.add_strategy(strategy=strategy)
 
-    # # Clean up resources
-    # engine.dispose()
+
+    # class MACDStrategyConfig(StrategyConfig, frozen=True):
+    # instrument_id: InstrumentId
+    # bar_type_1min: BarType
+    # fast_period: int = 12
+    # slow_period: int = 26
+    # signal_period: int = 9  # 添加缺失的signal_period参数
+
+
+    print(MACDStrategyConfig)
+
+    macdConfig = MACDStrategyConfig(
+        instrument_id=equity.id,
+        bar_type_1min=barType,
+    )
+
+    # Create and register the strategy
+    strategy = MACDStrategy(macdConfig)
+    engine.add_strategy(strategy)
+
+    # Execute the backtest
+    engine.run()
+
+    # Clean up resources
+    engine.dispose()

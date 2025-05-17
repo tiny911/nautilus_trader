@@ -13,58 +13,76 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import datetime as dt
 
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.indicators.average.ma_factory import MovingAverageType
+from nautilus_trader.core.nautilus_pyo3 import Quantity
 from nautilus_trader.indicators.macd import MovingAverageConvergenceDivergence
-from nautilus_trader.indicators.macd import MovingAverageFactory
 from nautilus_trader.model import Bar
 from nautilus_trader.model import BarType
 from nautilus_trader.model import InstrumentId
 from nautilus_trader.model import Position
-from nautilus_trader.model.data import Bar
-from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import OrderSide
-from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.enums import PriceType
 from nautilus_trader.model.orders import MarketOrder
 from nautilus_trader.trading.strategy import Strategy
 
 
 # 配置策略参数
-class MACDStrategyConfig(StrategyConfig, frozen=True):
-    """
-    Configuration for the demo strategy.
-    """
+# class MACDStrategyConfig(StrategyConfig,frozen=True):
+#     """
+#     Configuration for the demo strategy.
+#     """
 
-    instrument_id: str
-    fast_period: int = 12
-    slow_period: int = 26
-    signal_period: int = 9
+#     instrument_id: str
+#     bar_type_1min: BarType
+#     fast_period: int = 12
+#     slow_period: int = 26
+
+class MACDStrategyConfig(StrategyConfig, frozen=True):
+
+    instrument_id: InstrumentId
+    bar_type_1min: BarType
+    fast_period: int = 4
+    slow_period: int = 8
+    trading_side = 10_000
+    enter_threshold: float = 0.00010
 
 
 class MACDStrategy(Strategy):
     def __init__(self, config: MACDStrategyConfig):
         super().__init__(config)
         # 初始化参数
+        self.bar_type_1min = config.bar_type_1min
         self.instrument_id = config.instrument_id
         self.fast_period = config.fast_period
         self.slow_period = config.slow_period
-        self.signal_period = config.signal_period
+        
+        #self.signal_period = config.signal_period
 
         # 初始化指标
-        self.macd = MovingAverageConvergenceDivergence(fast_period=self.fast_period, slow_period=self.slow_period, signal_period=self.signal_period)
+        self.macd = MovingAverageConvergenceDivergence(
+            fast_period=self.fast_period,
+            slow_period=self.slow_period,
+            price_type=PriceType.MID)
         # self.macd = MovingAverageConvergenceDivergence(12, 26, 9)
         # self.register_indicator_for_bars(bar_type, self.macd)
 
         # 记录持仓状态
-        self.position = None
+        #self.position = None
+        self.trade_size = Quantity.from_int(config.trading_side)
+        
+        self.position: Position | None = None
+        self.enter_threshold = config.enter_threshold
+        
+        self.count_processed_bars = 0
+        
+        self.start_time = None
+        self.end_time = None
 
     def on_start(self):
         # 订阅行情数据（例如1分钟K线）
-        self.subscribe_bars(self.instrument_id)
+        self.subscribe_bars(self.bar_type_1min)
 
     def on_bar(self, bar: Bar):
         # 更新MACD指标
