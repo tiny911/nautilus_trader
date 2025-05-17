@@ -35,7 +35,7 @@ from nautilus_trader.trading.strategy import Strategy
 class MACDStrategyConfig(StrategyConfig, frozen=True):
     instrument_id: InstrumentId
     bar_type_1min: BarType
-    bar_type_sp500: BarType  # 新增标普500指数配置
+    bar_type_hs300: BarType  # 新增沪深300指数配置
     fast_period: int = 12
     slow_period: int = 26
     base_trade_size: int = 10_000
@@ -53,7 +53,9 @@ class MACDStrategy(Strategy):
     def __init__(self, config: MACDStrategyConfig):
         super().__init__()
         self.bar_type_1min = config.bar_type_1min
-        self.bar_type_sp500 = config.bar_type_sp500
+        self.bar_type_hs300 = config.bar_type_hs300
+
+        self.market_trend = "unknow"
 
         self.macd = MovingAverageConvergenceDivergence(
             fast_period=config.fast_period,
@@ -79,15 +81,15 @@ class MACDStrategy(Strategy):
     def on_start(self):
         self.start_time = dt.datetime.now()
 
-        # 订阅交易品种和标普500指数数据
+        # 订阅交易品种和沪深300指数数据
         self.subscribe_bars(self.bar_type_1min)
-        self.subscribe_bars(self.bar_type_sp500)
+        self.subscribe_bars(self.bar_type_hs300)
 
         self.log.info(f"My MACD strategy started at {self.start_time}")
 
     def on_bar(self, bar: Bar):
-        # 处理标普500指数数据
-        if bar.bar_type == self.bar_type_sp500:
+        # 处理沪深300指数数据
+        if bar.bar_type == self.bar_type_hs300:
             self.ema50.update(bar.close.as_f64_c())
             self.ema200.update(bar.close.as_f64_c())
             
