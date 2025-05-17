@@ -15,34 +15,22 @@
 
 import datetime as dt
 
-from nautilus_trader.core.datetime import unix_nanos_to_dt
+from nautilus_trader.common.enums import LogColor
+from nautilus_trader.config import StrategyConfig
+from nautilus_trader.indicators.average.ma_factory import MovingAverageType
+from nautilus_trader.indicators.macd import MovingAverageConvergenceDivergence
+from nautilus_trader.indicators.macd import MovingAverageFactory
+from nautilus_trader.model import Bar
+from nautilus_trader.model import BarType
+from nautilus_trader.model import InstrumentId
+from nautilus_trader.model import Position
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
-from nautilus_trader.trading.strategy import Strategy
-from nautilus_trader.config import StrategyConfig
-
-from nautilus_trader.common.enums import LogColor
-from nautilus_trader.indicators import macd
-from nautilus_trader.indicators import MACD
-from nautilus_trader.model.enums import OrderSide
-from nautilus_trader.model.orders import MarketOrder
-
-from nautilus_trader.indicators.macd import MovingAverageFactory
-from nautilus_trader.indicators.average.ma_factory import MovingAverageType
-
-import datetime as dt
-
-from nautilus_trader.indicators.macd import MovingAverageConvergenceDivergence
-
-from nautilus_trader.trading.strategy import Strategy
-
-from nautilus_trader.model import BarType
-from nautilus_trader.model import Bar
-from nautilus_trader.model import Position
-from nautilus_trader.model import InstrumentId
-from nautilus_trader.model.enums import PriceType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import PositionSide
+from nautilus_trader.model.enums import PriceType
+from nautilus_trader.model.orders import MarketOrder
+from nautilus_trader.trading.strategy import Strategy
 
 
 # 配置策略参数

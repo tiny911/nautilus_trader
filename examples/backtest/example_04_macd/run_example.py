@@ -16,10 +16,6 @@
 
 from decimal import Decimal
 
-from strategy import MACDStrategy
-from strategy import MACDStrategyConfig
-
-from examples.utils.data import prepare_demo_data_sh000300_futures_1min
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.enums import LogColor
@@ -35,6 +31,8 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments.base import Instrument
 from nautilus_trader.model.objects import Money
 from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
+from strategy import MACDStrategy
+from strategy import MACDStrategyConfig
 
 
 log = Logger(__name__)
@@ -54,24 +52,37 @@ if __name__ == "__main__":
     engine = BacktestEngine(config=engine_config)
 
     # ----------------------------------------------------------------------------------
-    # 2. Prepare market data
+    # 2. Load all data from catalog
     # ----------------------------------------------------------------------------------
+    data_catalog = ParquetDataCatalog("./data_catalog")
+    
+    # Get all instruments and bars
+    all_instruments = data_catalog.instruments()
+    all_bars = data_catalog.bars()
+    log.info(f"Loaded {len(all_instruments)} instruments and {len(all_bars)} bars from catalog", 
+             color=LogColor.YELLOW)
 
-    # Load multiple instruments
-    symbols = ["SH000300", "SZ399001", "SZ399006"]  # Example universe
-    prepared_data: dict = prepare_demo_data_sh000300_futures_1min(symbols)
-    venue_name: str = prepared_data["venue_name"]
-    instruments: list[Instrument] = prepared_data["instruments"]
-    bar_type_1min: BarType = prepared_data["bar_type_1min"]
-    all_bars: list[list[Bar]] = prepared_data["bars"]
+    # Group bars by instrument and bar type
+    bars_grouped = {}
+    for bar in all_bars:
+        try:
+            instrument_id = bar.bar_type.instrument_id
+            bar_type_str = str(bar.bar_type)
+            key = (instrument_id, bar_type_str)
+        except AttributeError as e:
+            log.error(f"Skipping invalid bar: {e}")
+            continue
+        if key not in bars_grouped:
+            bars_grouped[key] = []
+        bars_grouped[key].append(bar)
 
     # ----------------------------------------------------------------------------------
     # 3. Configure trading environment
     # ----------------------------------------------------------------------------------
-
+    VENUE_NAME = "SZSE"
     # Set up the trading venue with a margin account
     engine.add_venue(
-        venue=Venue(venue_name),
+        venue=Venue(VENUE_NAME),
         oms_type=OmsType.NETTING,  # Netting: positions are netted against each other
         account_type=AccountType.MARGIN,  # Margin account: allows trading with leverage
         starting_balances=[Money(1_000_000, USD)],  # Initial account balance of $1,000,000 USD
@@ -79,53 +90,27 @@ if __name__ == "__main__":
         default_leverage=Decimal(1),  # No leverage is used (1:1)
     )
 
-    # Add instrument and market data to the engine
-    # Add multiple instruments and data
-    for instrument, bars in zip(instruments, all_bars):
-        engine.add_instrument(instrument)
-        engine.add_data(bars)
 
-    # ----------------------------------------------------------------------------------
-    # 4. Configure and use Data Catalog
-    # ----------------------------------------------------------------------------------
-
-    # Create a Data Catalog (folder will be created if it doesn't exist)
-    data_catalog = ParquetDataCatalog("./data_catalog")
-
-    # Write data to the catalog
-    data_catalog.write_data(instruments)  # Store all instrument definitions
-    for bars in all_bars:
-        data_catalog.write_data(bars)  # Store all bars data
-
-    # Read and analyze data from the catalog
-    # - Retrieve all instrument definitions
-    all_instruments = data_catalog.instruments()
-    log.info(f"All instruments:\n{all_instruments}", color=LogColor.YELLOW)
-
-    # - Get all available bars
-    all_bars = data_catalog.bars()
-    log.info(f"All bars count: {len(all_bars)}", color=LogColor.YELLOW)
-
-    # - Get specific bars with date range filter
-    # filtered_bars = data_catalog.bars(
-    #     bar_types=[str(hs300_1min_bartype)],
-    #     start="2024-01-10",  # Filter start date
-    #     end="2024-01-15",  # Filter end date
-    # )
-    # log.info(f"Bars between Jan 10-15: {len(filtered_bars)}", color=LogColor.YELLOW)
-
-    # - List all available data types
-    data_types_in_catalog = data_catalog.list_data_types()
-    log.info(f"Data types stored in catalog\n{data_types_in_catalog}", color=LogColor.YELLOW)
 
     # ----------------------------------------------------------------------------------
     # 5. Configure and run strategy
     # ----------------------------------------------------------------------------------
-
-    # Create strategy instances for all instruments
-    strategies = [MACDStrategy(config=MACDStrategyConfig(instrument.id, bar_type_1min)) for instrument in instruments]
-    for strategy in strategies:
-        engine.add_strategy(strategy)
+    
+    # Create strategies for each instrument and bar type combination
+    strategies = []
+    for (instrument_id, bar_type_str), bars in bars_grouped.items():
+        bar_type = BarType.from_str(bar_type_str)
+        config = MACDStrategyConfig(
+            instrument_id=instrument_id,
+            bar_type_1min=bar_type,  # 根据策略定义修正参数名称
+            bar_type_sp500="",
+            fast_period=12,
+            slow_period=26,
+            # signal_period=9
+        )
+        strategies.append(MACDStrategy(config=config))
+        engine.add_strategy(strategies[-1])
+        log.info(f"Added strategy for {instrument_id} {bar_type}", color=LogColor.GREEN)
 
     # Execute the backtest
     engine.run()

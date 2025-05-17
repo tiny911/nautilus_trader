@@ -20,7 +20,6 @@ import numpy as np
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.datetime import unix_nanos_to_dt
-from nautilus_trader.indicators.ema import ExponentialMovingAverage
 from nautilus_trader.indicators.macd import MovingAverageConvergenceDivergence
 from nautilus_trader.model import Bar
 from nautilus_trader.model import BarType
@@ -54,11 +53,12 @@ class MACDStrategy(Strategy):
     def __init__(self, config: MACDStrategyConfig):
         super().__init__()
         self.bar_type_1min = config.bar_type_1min
+        self.bar_type_sp500 = config.bar_type_sp500
 
         self.macd = MovingAverageConvergenceDivergence(
             fast_period=config.fast_period,
             slow_period=config.slow_period,
-            signal_period=9,  # 添加标准信号线周期
+            #signal_period=9,  # 添加标准信号线周期
             price_type=PriceType.MID
         )
         self.instrument_id = config.instrument_id

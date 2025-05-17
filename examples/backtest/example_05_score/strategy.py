@@ -558,7 +558,7 @@ class ScoreStrategy(Strategy):
             quantity=quantity
         )
         self.submit_order(order)
-        
+
         # 更新止损
         if self.use_stop_loss:
             self._set_stop_loss(instrument_id, side)
