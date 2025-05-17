@@ -36,7 +36,7 @@ use crate::rpc::{
 /// - Message serialization and deserialization of RPC messages
 /// - Event type mapping and dispatching
 pub struct CoreBlockchainRpcClient {
-    /// The blockchain network type this client connects to
+    /// The blockchain network type this client connects to.
     chain: Chain,
     /// WebSocket secure URL for the blockchain node's RPC endpoint.
     wss_rpc_url: String,
@@ -44,11 +44,12 @@ pub struct CoreBlockchainRpcClient {
     request_id: u64,
     /// Tracks in-flight subscription requests by mapping request IDs to their event types.
     pending_subscription_request: HashMap<u64, RpcEventType>,
-    /// Maps active subscription IDs to their corresponding event types for message deserialization
+    /// Maps active subscription IDs to their corresponding event types for message
+    /// deserialization.
     subscription_event_types: HashMap<String, RpcEventType>,
-    /// The active WebSocket client connection
+    /// The active WebSocket client connection.
     wss_client: Option<Arc<WebSocketClient>>,
-    /// Channel receiver for consuming WebSocket messages
+    /// Channel receiver for consuming WebSocket messages.
     wss_consumer_rx: Option<tokio::sync::mpsc::Receiver<Message>>,
 }
 
@@ -110,7 +111,9 @@ impl CoreBlockchainRpcClient {
             self.pending_subscription_request
                 .insert(self.request_id, event_type);
             self.request_id += 1;
-            client.send_text(msg.to_string(), None).await;
+            if let Err(err) = client.send_text(msg.to_string(), None).await {
+                log::error!("Error sending subscribe message: {err:?}");
+            }
             Ok(())
         } else {
             Err(BlockchainRpcClientError::ClientError(String::from(
@@ -132,7 +135,9 @@ impl CoreBlockchainRpcClient {
                 "jsonrpc": "2.0",
                 "params": [subscription_id]
             });
-            client.send_text(msg.to_string(), None).await;
+            if let Err(err) = client.send_text(msg.to_string(), None).await {
+                log::error!("Error sending unsubscribe message: {err:?}");
+            }
             Ok(())
         } else {
             Err(BlockchainRpcClientError::ClientError(String::from(

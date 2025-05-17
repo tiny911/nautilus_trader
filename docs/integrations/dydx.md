@@ -12,21 +12,21 @@ central components.
 
 ## Installation
 
-To install the latest `nautilus_trader` package along with the `dydx` dependencies using pip:
+To install NautilusTrader with dYdX support:
 
-```
-pip install -U "nautilus_trader[dydx]"
+```bash
+pip install --upgrade "nautilus_trader[dydx]"
 ```
 
-To install from source using uv:
+To build from source with all extras (including dYdX):
 
-```
-uv install --extra dydx
+```bash
+uv sync --all-extras
 ```
 
 ## Examples
 
-You can find functional live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/dydx/).
+You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/dydx/).
 
 ## Overview
 

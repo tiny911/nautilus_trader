@@ -11,6 +11,7 @@ You can configure the required environment variables in two ways:
    ```
    CHAIN=Ethereum
    RPC_WSS_URL=wss://mainnet.infura.io/ws/v3/YOUR_INFURA_API_KEY
+   RPC_HTTP_URL=https://mainnet.infura.io/v3/YOUR_INFURA_API_KEY
    ```
 
 2. **Providing variables directly in the command line:**
@@ -24,11 +25,11 @@ You can configure the required environment variables in two ways:
 The scripts will connect to the specified blockchain and log information about each new block received for both the RPC version and only Hypersync.
 
 ```
-cargo run --bin live_blocks_rpc
+cargo run --bin live_blocks_rpc --features hypersync
 ```
 
 ```
-cargo run --bin live_blocks_hypersync
+cargo run --bin live_blocks_hypersync --features hypersync
 ```
 
 For RPC example, the output should be:
@@ -42,3 +43,25 @@ Running `target/debug/live_blocks_rpc`
 ^C2025-04-25T14:55:38.314022000Z [INFO] TRADER-001.live_blocks: Shutdown signal received, shutting down...
 
 ```
+
+### Sync dex, tokens and pool for Uniswap V3 on Ethereum
+This script demonstrates how to use the blockchain data client to discover and cache Uniswap V3 pools and their associated tokens. It queries the Ethereum blockchain for pool creation events emitted by the Uniswap V3 factory contract, retrieves token metadata (name, symbol, decimals) for each token in the pools via smart contract calls, and stores everything in a local Postgres database.
+
+```
+cargo run --bin sync_tokens_pools --features hypersync
+```
+
+## License
+
+The source code for NautilusTrader is available on GitHub under the [GNU Lesser General Public License v3.0](https://www.gnu.org/licenses/lgpl-3.0.en.html).
+Contributions to the project are welcome and require the completion of a standard [Contributor License Agreement (CLA)](https://github.com/nautechsystems/nautilus_trader/blob/develop/CLA.md).
+
+---
+
+NautilusTrader™ is developed and maintained by Nautech Systems, a technology
+company specializing in the development of high-performance trading systems.
+For more information, visit <https://nautilustrader.io>.
+
+<img src="https://nautilustrader.io/nautilus-logo-white.png" alt="logo" width="400" height="auto"/>
+
+<span style="font-size: 0.8em; color: #999;">© 2015-2025 Nautech Systems Pty Ltd. All rights reserved.</span>

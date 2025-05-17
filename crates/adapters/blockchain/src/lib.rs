@@ -14,9 +14,18 @@
 // -------------------------------------------------------------------------------------------------
 
 pub mod config;
+pub mod contracts;
+pub mod events;
 pub mod rpc;
 
 #[cfg(feature = "hypersync")]
+pub mod cache;
+
+#[cfg(feature = "hypersync")]
 pub mod data;
+
+#[cfg(feature = "hypersync")]
+pub mod exchanges;
+
 #[cfg(feature = "hypersync")]
 pub mod hypersync;

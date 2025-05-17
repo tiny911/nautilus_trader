@@ -29,6 +29,7 @@
 //! - Controller task manages lifecycle
 
 use std::{
+    fmt::Debug,
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering},
@@ -55,6 +56,8 @@ use tokio_tungstenite::{
 
 use crate::{
     backoff::ExponentialBackoff,
+    error::SendError,
+    logging::{log_task_aborted, log_task_started, log_task_stopped},
     mode::ConnectionMode,
     ratelimiter::{RateLimiter, clock::MonotonicClock, quota::Quota},
 };
@@ -245,9 +248,20 @@ impl WebSocketClientInner {
     pub async fn reconnect(&mut self) -> Result<(), Error> {
         tracing::debug!("Reconnecting");
 
+        if ConnectionMode::from_atomic(&self.connection_mode).is_disconnect() {
+            tracing::debug!("Reconnect aborted due to disconnect state");
+            return Ok(());
+        }
+
         tokio::time::timeout(self.reconnect_timeout, async {
+            // Attempt to connect; abort early if a disconnect was requested
             let (new_writer, reader) =
                 Self::connect_with_server(&self.config.url, self.config.headers.clone()).await?;
+
+            if ConnectionMode::from_atomic(&self.connection_mode).is_disconnect() {
+                tracing::debug!("Reconnect aborted mid-flight (after connect)");
+                return Ok(());
+            }
 
             if let Err(e) = self.writer_tx.send(WriterCommand::Update(new_writer)) {
                 tracing::error!("{e}");
@@ -256,13 +270,25 @@ impl WebSocketClientInner {
             // Delay before closing connection
             tokio::time::sleep(Duration::from_millis(100)).await;
 
+            if ConnectionMode::from_atomic(&self.connection_mode).is_disconnect() {
+                tracing::debug!("Reconnect aborted mid-flight (after delay)");
+                return Ok(());
+            }
+
             if let Some(ref read_task) = self.read_task.take() {
                 if !read_task.is_finished() {
                     read_task.abort();
-                    tracing::debug!("Aborted task 'read'");
+                    log_task_aborted("read");
                 }
             }
 
+            // If a disconnect was requested during reconnect, do not proceed to reactivate
+            if ConnectionMode::from_atomic(&self.connection_mode).is_disconnect() {
+                tracing::debug!("Reconnect aborted mid-flight (before spawn read)");
+                return Ok(());
+            }
+
+            // Mark as active only if not disconnecting
             self.connection_mode
                 .store(ConnectionMode::Active.as_u8(), Ordering::SeqCst);
 
@@ -359,7 +385,7 @@ impl WebSocketClientInner {
         handler: Arc<PyObject>,
         ping_handler: Option<Arc<PyObject>>,
     ) -> tokio::task::JoinHandle<()> {
-        tracing::debug!("Started task 'read'");
+        log_task_started("read");
 
         // Interval between checking the connection mode
         let check_interval = Duration::from_millis(10);
@@ -435,7 +461,7 @@ impl WebSocketClientInner {
         writer: MessageWriter,
         mut writer_rx: tokio::sync::mpsc::UnboundedReceiver<WriterCommand>,
     ) -> tokio::task::JoinHandle<()> {
-        tracing::debug!("Started task 'write'");
+        log_task_started("write");
 
         // Interval between checking the connection mode
         let check_interval = Duration::from_millis(10);
@@ -508,7 +534,7 @@ impl WebSocketClientInner {
             // we ignore any error as the writer may already be closed.
             _ = active_writer.close().await;
 
-            tracing::debug!("Completed task 'write'");
+            log_task_stopped("write");
         })
     }
 
@@ -518,7 +544,7 @@ impl WebSocketClientInner {
         message: Option<String>,
         writer_tx: tokio::sync::mpsc::UnboundedSender<WriterCommand>,
     ) -> tokio::task::JoinHandle<()> {
-        tracing::debug!("Started task 'heartbeat'");
+        log_task_started("heartbeat");
 
         tokio::task::spawn(async move {
             let interval = Duration::from_secs(heartbeat_secs);
@@ -545,7 +571,7 @@ impl WebSocketClientInner {
                 }
             }
 
-            tracing::debug!("Completed task 'heartbeat'");
+            log_task_stopped("heartbeat");
         })
     }
 }
@@ -555,19 +581,19 @@ impl Drop for WebSocketClientInner {
         if let Some(ref read_task) = self.read_task.take() {
             if !read_task.is_finished() {
                 read_task.abort();
-                tracing::debug!("Aborted task 'read'");
+                log_task_aborted("read");
             }
         }
 
         if !self.write_task.is_finished() {
             self.write_task.abort();
-            tracing::debug!("Aborted task 'write'");
+            log_task_aborted("write");
         }
 
         if let Some(ref handle) = self.heartbeat_task.take() {
             if !handle.is_finished() {
                 handle.abort();
-                tracing::debug!("Aborted task 'heartbeat'");
+                log_task_aborted("heartbeat");
             }
         }
     }
@@ -586,6 +612,12 @@ pub struct WebSocketClient {
     pub(crate) connection_mode: Arc<AtomicU8>,
     pub(crate) writer_tx: tokio::sync::mpsc::UnboundedSender<WriterCommand>,
     pub(crate) rate_limiter: Arc<RateLimiter<String, MonotonicClock>>,
+}
+
+impl Debug for WebSocketClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(WebSocketClient)).finish()
+    }
 }
 
 impl WebSocketClient {
@@ -608,8 +640,6 @@ impl WebSocketClient {
 
         let connection_mode = inner.connection_mode.clone();
 
-        let rate_limiter = Arc::new(RateLimiter::new_with_quota(default_quota, keyed_quotas));
-
         let writer_tx = inner.writer_tx.clone();
         if let Err(e) = writer_tx.send(WriterCommand::Update(writer)) {
             tracing::error!("{e}");
@@ -624,6 +654,8 @@ impl WebSocketClient {
             #[cfg(feature = "python")]
             None, // no post_disconnection
         );
+
+        let rate_limiter = Arc::new(RateLimiter::new_with_quota(default_quota, keyed_quotas));
 
         Ok((
             reader,
@@ -753,7 +785,7 @@ impl WebSocketClient {
 
             if !self.controller_task.is_finished() {
                 self.controller_task.abort();
-                tracing::debug!("Aborted task 'controller'");
+                log_task_aborted("controller");
             }
         })
         .await
@@ -768,52 +800,69 @@ impl WebSocketClient {
     }
 
     /// Sends the given text `data` to the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns a websocket error if unable to send.
     #[allow(unused_variables)]
-    pub async fn send_text(&self, data: String, keys: Option<Vec<String>>) {
+    pub async fn send_text(
+        &self,
+        data: String,
+        keys: Option<Vec<String>>,
+    ) -> std::result::Result<(), SendError> {
         self.rate_limiter.await_keys_ready(keys).await;
 
         if !self.is_active() {
-            tracing::error!("Cannot send data - connection not active");
-            return;
+            return Err(SendError::Closed);
         }
 
         tracing::trace!("Sending text: {data:?}");
 
         let msg = Message::Text(data.into());
-        if let Err(e) = self.writer_tx.send(WriterCommand::Send(msg)) {
-            tracing::error!("Error sending message: {e}");
-        }
+        self.writer_tx
+            .send(WriterCommand::Send(msg))
+            .map_err(|e| SendError::BrokenPipe(e.to_string()))
     }
 
     /// Sends the given bytes `data` to the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns a websocket error if unable to send.
     #[allow(unused_variables)]
-    pub async fn send_bytes(&self, data: Vec<u8>, keys: Option<Vec<String>>) {
+    pub async fn send_bytes(
+        &self,
+        data: Vec<u8>,
+        keys: Option<Vec<String>>,
+    ) -> std::result::Result<(), SendError> {
         self.rate_limiter.await_keys_ready(keys).await;
 
         if !self.is_active() {
-            tracing::error!("Cannot send data - connection not active");
-            return;
+            return Err(SendError::Closed);
         }
 
         tracing::trace!("Sending bytes: {data:?}");
 
         let msg = Message::Binary(data.into());
-        if let Err(e) = self.writer_tx.send(WriterCommand::Send(msg)) {
-            tracing::error!("Error sending message: {e}");
-        }
+        self.writer_tx
+            .send(WriterCommand::Send(msg))
+            .map_err(|e| SendError::BrokenPipe(e.to_string()))
     }
 
     /// Sends a close message to the server.
-    pub async fn send_close_message(&self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns a websocket error if unable to send.
+    pub async fn send_close_message(&self) -> std::result::Result<(), SendError> {
         if !self.is_active() {
-            tracing::error!("Cannot send close message - connection not active");
-            return;
+            return Err(SendError::Closed);
         }
 
         let msg = Message::Close(None);
-        if let Err(e) = self.writer_tx.send(WriterCommand::Send(msg)) {
-            tracing::error!("Error sending close message: {e}");
-        }
+        self.writer_tx
+            .send(WriterCommand::Send(msg))
+            .map_err(|e| SendError::BrokenPipe(e.to_string()))
     }
 
     fn spawn_controller_task(
@@ -824,7 +873,7 @@ impl WebSocketClient {
         #[cfg(feature = "python")] py_post_disconnection: Option<PyObject>, // TODO: Deprecated
     ) -> tokio::task::JoinHandle<()> {
         tokio::task::spawn(async move {
-            tracing::debug!("Started task 'controller'");
+            log_task_started("controller");
 
             let check_interval = Duration::from_millis(10);
 
@@ -843,14 +892,14 @@ impl WebSocketClient {
                         if let Some(task) = &inner.read_task {
                             if !task.is_finished() {
                                 task.abort();
-                                tracing::debug!("Aborted task 'read'");
+                                log_task_aborted("read");
                             }
                         }
 
                         if let Some(task) = &inner.heartbeat_task {
                             if !task.is_finished() {
                                 task.abort();
-                                tracing::debug!("Aborted task 'heartbeat'");
+                                log_task_aborted("heartbeat");
                             }
                         }
                     })
@@ -877,24 +926,32 @@ impl WebSocketClient {
                 if mode.is_reconnect() || (mode.is_active() && !inner.is_alive()) {
                     match inner.reconnect().await {
                         Ok(()) => {
-                            tracing::debug!("Reconnected successfully");
                             inner.backoff.reset();
 
-                            if let Some(ref callback) = post_reconnection {
-                                callback();
-                            }
+                            // Only invoke callbacks if not in disconnect state
+                            if ConnectionMode::from_atomic(&connection_mode).is_active() {
+                                if let Some(ref callback) = post_reconnection {
+                                    callback();
+                                }
 
-                            // TODO: Python based websocket handlers deprecated (will be removed)
-                            #[cfg(feature = "python")]
-                            if let Some(ref handler) = py_post_reconnection {
-                                Python::with_gil(|py| match handler.call0(py) {
-                                    Ok(_) => {
-                                        tracing::debug!("Called `post_reconnection` handler");
-                                    }
-                                    Err(e) => tracing::error!(
-                                        "Error calling `post_reconnection` handler: {e}"
-                                    ),
-                                });
+                                // TODO: Python based websocket handlers deprecated (will be removed)
+                                #[cfg(feature = "python")]
+                                if let Some(ref callback) = py_post_reconnection {
+                                    Python::with_gil(|py| match callback.call0(py) {
+                                        Ok(_) => {
+                                            tracing::debug!("Called `post_reconnection` handler")
+                                        }
+                                        Err(e) => tracing::error!(
+                                            "Error calling `post_reconnection` handler: {e}"
+                                        ),
+                                    });
+                                }
+
+                                tracing::debug!("Reconnected successfully");
+                            } else {
+                                tracing::debug!(
+                                    "Skipping post_reconnection handlers due to disconnect state"
+                                );
                             }
                         }
                         Err(e) => {
@@ -912,8 +969,18 @@ impl WebSocketClient {
                 .connection_mode
                 .store(ConnectionMode::Closed.as_u8(), Ordering::SeqCst);
 
-            tracing::debug!("Completed task 'controller'");
+            log_task_stopped("controller");
         })
+    }
+}
+
+// Abort controller task on drop to clean up background tasks
+impl Drop for WebSocketClient {
+    fn drop(&mut self) {
+        if !self.controller_task.is_finished() {
+            self.controller_task.abort();
+            log_task_aborted("controller");
+        }
     }
 }
 
@@ -1105,10 +1172,10 @@ mod tests {
         let client = setup_test_client(server.port).await;
 
         // 1) Send normal message
-        client.send_text("Hello".into(), None).await;
+        client.send_text("Hello".into(), None).await.unwrap();
 
         // 2) Trigger forced close from server
-        client.send_text("close-now".into(), None).await;
+        client.send_text("close-now".into(), None).await.unwrap();
 
         // 3) Wait a bit => read loop sees close => reconnect
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -1152,11 +1219,11 @@ mod tests {
         .unwrap();
 
         // First 2 should succeed
-        client.send_text("test1".into(), None).await;
-        client.send_text("test2".into(), None).await;
+        client.send_text("test1".into(), None).await.unwrap();
+        client.send_text("test2".into(), None).await.unwrap();
 
         // Third should error
-        client.send_text("test3".into(), None).await;
+        client.send_text("test3".into(), None).await.unwrap();
 
         // Cleanup
         client.disconnect().await;
@@ -1172,7 +1239,7 @@ mod tests {
         for i in 0..10 {
             let client = client.clone();
             handles.push(task::spawn(async move {
-                client.send_text(format!("test{i}"), None).await;
+                client.send_text(format!("test{i}"), None).await.unwrap();
             }));
         }
 
@@ -1183,5 +1250,75 @@ mod tests {
         // Cleanup
         client.disconnect().await;
         assert!(client.is_disconnected());
+    }
+}
+
+#[cfg(test)]
+mod rust_tests {
+    use tokio::{
+        net::TcpListener,
+        task,
+        time::{Duration, sleep},
+    };
+    use tokio_tungstenite::accept_async;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_reconnect_then_disconnect() {
+        // Bind an ephemeral port
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Server task: accept one ws connection then close it
+        let server = task::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws = accept_async(stream).await.unwrap();
+            drop(ws);
+            // Keep alive briefly
+            sleep(Duration::from_secs(1)).await;
+        });
+
+        // Build a rust consumer for incoming messages (unused here)
+        let (consumer, _rx) = Consumer::rust_consumer();
+
+        // Configure client with short reconnect backoff
+        let config = WebSocketConfig {
+            url: format!("ws://127.0.0.1:{port}"),
+            headers: vec![],
+            handler: consumer,
+            heartbeat: None,
+            heartbeat_msg: None,
+            #[cfg(feature = "python")]
+            ping_handler: None,
+            reconnect_timeout_ms: Some(1_000),
+            reconnect_delay_initial_ms: Some(50),
+            reconnect_delay_max_ms: Some(100),
+            reconnect_backoff_factor: Some(1.0),
+            reconnect_jitter_ms: Some(0),
+        };
+
+        // Connect the client
+        let client = {
+            #[cfg(feature = "python")]
+            {
+                WebSocketClient::connect(config.clone(), None, None, None, vec![], None)
+                    .await
+                    .unwrap()
+            }
+            #[cfg(not(feature = "python"))]
+            {
+                WebSocketClient::connect(config.clone(), vec![], None)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Allow server to drop connection and client to detect
+        sleep(Duration::from_millis(100)).await;
+        // Now immediately disconnect the client
+        client.disconnect().await;
+        assert!(client.is_disconnected());
+        server.abort();
     }
 }

@@ -31,23 +31,28 @@ nautilus-model = { workspace = true, features = ["defi"] }
 nautilus-core = { workspace = true }
 nautilus-network = { workspace = true, features = ["python"] }  # TODO: Untangle python feature
 nautilus-common = { workspace = true }
+nautilus-infrastructure = { workspace = true, features = ["postgres"] }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 dotenvy = { workspace = true }
 enum_dispatch = { workspace = true }
 futures-util = { workspace = true }
+hex = { workspace = true }
 log = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sqlx = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 ustr = { workspace = true }
-hypersync-client = { version = "0.18.1", optional = true }
+alloy = { version = "1.0.3" }
+hypersync-client = { version = "0.18.2", optional = true }
 hypersync-schema = { version = "0.3.0", optional = true }
 
 [dev-dependencies]
@@ -61,4 +66,9 @@ required-features = ["hypersync"]
 [[bin]]
 name = "live_blocks_hypersync"
 path = "bin/watch_hypersync_live_blocks.rs"
+required-features = ["hypersync"]
+
+[[bin]]
+name = "sync_tokens_pools"
+path = "bin/sync_tokens_pools.rs"
 required-features = ["hypersync"]

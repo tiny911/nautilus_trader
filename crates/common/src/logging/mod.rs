@@ -53,46 +53,39 @@ static LOGGING_REALTIME: AtomicBool = AtomicBool::new(true);
 static LOGGING_COLORED: AtomicBool = AtomicBool::new(true);
 
 /// Returns whether the core logger is enabled.
-#[unsafe(no_mangle)]
-pub extern "C" fn logging_is_initialized() -> u8 {
-    u8::from(LOGGING_INITIALIZED.load(Ordering::Relaxed))
+pub fn logging_is_initialized() -> bool {
+    LOGGING_INITIALIZED.load(Ordering::Relaxed)
 }
 
 /// Sets the logging system to bypass mode.
-#[unsafe(no_mangle)]
-pub extern "C" fn logging_set_bypass() {
+pub fn logging_set_bypass() {
     LOGGING_BYPASSED.store(true, Ordering::Relaxed);
 }
 
 /// Shuts down the logging system.
-#[unsafe(no_mangle)]
-pub extern "C" fn logging_shutdown() {
+pub fn logging_shutdown() {
     // Flush any buffered logs and mark logging as uninitialized
     log::logger().flush();
     LOGGING_INITIALIZED.store(false, Ordering::Relaxed);
 }
 
 /// Returns whether the core logger is using ANSI colors.
-#[unsafe(no_mangle)]
-pub extern "C" fn logging_is_colored() -> u8 {
-    u8::from(LOGGING_COLORED.load(Ordering::Relaxed))
+pub fn logging_is_colored() -> bool {
+    LOGGING_COLORED.load(Ordering::Relaxed)
 }
 
 /// Sets the global logging clock to real-time mode.
-#[unsafe(no_mangle)]
-pub extern "C" fn logging_clock_set_realtime_mode() {
+pub fn logging_clock_set_realtime_mode() {
     LOGGING_REALTIME.store(true, Ordering::Relaxed);
 }
 
 /// Sets the global logging clock to static mode.
-#[unsafe(no_mangle)]
-pub extern "C" fn logging_clock_set_static_mode() {
+pub fn logging_clock_set_static_mode() {
     LOGGING_REALTIME.store(false, Ordering::Relaxed);
 }
 
 /// Sets the global logging clock static time with the given UNIX timestamp (nanoseconds).
-#[unsafe(no_mangle)]
-pub extern "C" fn logging_clock_set_static_time(time_ns: u64) {
+pub fn logging_clock_set_static_time(time_ns: u64) {
     let clock = get_atomic_clock_static();
     clock.set_time(time_ns.into());
 }
@@ -209,4 +202,29 @@ pub fn parse_component_levels(
         }
         None => HashMap::new(),
     }
+}
+
+/// Logs that a task has started using `tracing::debug!`.
+pub fn log_task_started(task_name: &str) {
+    tracing::debug!("Started task '{task_name}'");
+}
+
+/// Logs that a task has stopped using `tracing::debug!`.
+pub fn log_task_stopped(task_name: &str) {
+    tracing::debug!("Stopped task '{task_name}'");
+}
+
+/// Logs that a task is being awaited using `tracing::debug!`.
+pub fn log_task_awaiting(task_name: &str) {
+    tracing::debug!("Awaiting task '{task_name}'");
+}
+
+/// Logs that a task was aborted using `tracing::debug!`.
+pub fn log_task_aborted(task_name: &str) {
+    tracing::debug!("Aborted task '{task_name}'");
+}
+
+/// Logs that there was an error in a task `tracing::error!`.
+pub fn log_task_error(task_name: &str, e: &anyhow::Error) {
+    tracing::error!("Error in task '{task_name}': {e}");
 }

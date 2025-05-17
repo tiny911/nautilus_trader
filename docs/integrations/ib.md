@@ -12,16 +12,16 @@ The standalone TWS and IB Gateway applications require manually inputting userna
 
 ## Installation
 
-To install the latest `nautilus_trader` package along with the `ibapi` and optional `docker` dependencies using pip:
+To install NautilusTrader with Interactive Brokers (and Docker) support:
 
-```
-pip install -U "nautilus_trader[ib,docker]"
+```bash
+pip install --upgrade "nautilus_trader[ib,docker]"
 ```
 
-To install from source using uv:
+To build from source with all extras (including IB and Docker):
 
-```
-uv sync --extra ib --extra docker
+```bash
+uv sync --all-extras
 ```
 
 :::note
@@ -30,7 +30,7 @@ Because IB does not provide wheels for `ibapi`, NautilusTrader [repackages](http
 
 ## Examples
 
-You can find functional live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/interactive_brokers/).
+You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/interactive_brokers/).
 
 ## Getting Started
 

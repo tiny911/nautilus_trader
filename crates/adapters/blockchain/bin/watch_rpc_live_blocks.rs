@@ -71,8 +71,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(_) => chains::ETHEREUM.clone(), // default
     };
+    let chain = Arc::new(chain);
     let wss_rpc_url = std::env::var("RPC_WSS_URL").expect("RPC_WSS_URL must be set");
-    let blockchain_adapter_config = BlockchainAdapterConfig::new(Some(wss_rpc_url), false);
+    let http_rpc_url = std::env::var("RPC_HTTP_URL").expect("RPC_HTTP_URL must be set");
+    let blockchain_adapter_config =
+        BlockchainAdapterConfig::new(http_rpc_url, None, Some(wss_rpc_url), false);
     let mut data_client = BlockchainDataClient::new(chain.clone(), blockchain_adapter_config);
     data_client.connect().await?;
     data_client.subscribe_blocks().await;

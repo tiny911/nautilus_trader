@@ -935,7 +935,7 @@ cdef class OrderMatchingEngine:
 
             if order.linked_order_ids is not None:
                 # Check contingent orders are still open
-                for client_order_id in order.linked_order_ids:
+                for client_order_id in order.linked_order_ids or []:
                     contingent_order = self.cache.order(client_order_id)
                     if contingent_order is None:
                         raise RuntimeError(f"Cannot find contingent order for {client_order_id!r}")  # pragma: no cover
@@ -1503,6 +1503,10 @@ cdef class OrderMatchingEngine:
         Price trigger_price,
     ):
         if order.is_activated:
+            # Activated trailing-stop may not yet have a trigger_price;
+            # await next market update to calculate it
+            if trigger_price is None:
+                return
             self._update_stop_market_order(order, qty, trigger_price)
         elif qty or trigger_price:
             self._generate_order_updated(order, qty, None, trigger_price)
@@ -1515,6 +1519,10 @@ cdef class OrderMatchingEngine:
         Price trigger_price,
     ):
         if order.is_activated:
+            # Activated trailing-stop may not yet have a trigger_price;
+            # await next market update to calculate it
+            if trigger_price is None:
+                return
             self._update_stop_limit_order(order, qty, price, trigger_price)
         elif qty or trigger_price:
             self._generate_order_updated(order, qty, price, trigger_price)
@@ -2234,7 +2242,7 @@ cdef class OrderMatchingEngine:
         cdef ClientOrderId client_order_id
         cdef Order child_order
         if order.contingency_type == ContingencyType.OTO:
-            for client_order_id in order.linked_order_ids:
+            for client_order_id in order.linked_order_ids or []:
                 child_order = self.cache.order(client_order_id)
                 assert child_order is not None, "OTO child order not found"
                 if child_order.is_closed_c():
@@ -2258,7 +2266,7 @@ cdef class OrderMatchingEngine:
                         account_id=order.account_id or self._account_ids[order.trader_id],
                     )
         elif order.contingency_type == ContingencyType.OCO:
-            for client_order_id in order.linked_order_ids:
+            for client_order_id in order.linked_order_ids or []:
                 oco_order = self.cache.order(client_order_id)
                 assert oco_order is not None, "OCO order not found"
                 if oco_order.is_closed_c():
@@ -2267,7 +2275,7 @@ cdef class OrderMatchingEngine:
                     continue  # Order is not on the exchange yet
                 self.cancel_order(oco_order)
         elif order.contingency_type == ContingencyType.OUO:
-            for client_order_id in order.linked_order_ids:
+            for client_order_id in order.linked_order_ids or []:
                 ouo_order = self.cache.order(client_order_id)
                 assert ouo_order is not None, "OUO order not found"
                 if ouo_order.is_active_local_c():
@@ -2505,7 +2513,7 @@ cdef class OrderMatchingEngine:
         self._log.debug(f"Updating OUO orders from {order.client_order_id}", LogColor.MAGENTA)
         cdef ClientOrderId client_order_id
         cdef Order ouo_order
-        for client_order_id in order.linked_order_ids:
+        for client_order_id in order.linked_order_ids or []:
             ouo_order = self.cache.order(client_order_id)
             assert ouo_order is not None, "OUO order not found"
             if ouo_order.is_active_local_c():
@@ -2527,7 +2535,7 @@ cdef class OrderMatchingEngine:
         # Iterate all contingent orders and cancel if active
         cdef ClientOrderId client_order_id
         cdef Order contingent_order
-        for client_order_id in order.linked_order_ids:
+        for client_order_id in order.linked_order_ids or []:
             contingent_order = self.cache.order(client_order_id)
             assert contingent_order is not None, "Contingency order not found"
             if contingent_order.is_active_local_c():

@@ -30,9 +30,8 @@ use nautilus_model::identifiers::TraderId;
 use crate::{
     enums::{LogColor, LogLevel},
     logging::{
-        self, headers,
+        headers,
         logger::{self, LogGuard, LoggerConfig},
-        logging_set_bypass, map_log_level_to_filter, parse_component_levels,
         writer::FileWriterConfig,
     },
 };
@@ -76,10 +75,11 @@ impl DerefMut for LogGuard_API {
 /// Should only be called once during an application's run, ideally at the
 /// beginning of the run.
 ///
-/// - Assumes `directory_ptr` is either NULL or a valid C string pointer.
-/// - Assumes `file_name_ptr` is either NULL or a valid C string pointer.
-/// - Assumes `file_format_ptr` is either NULL or a valid C string pointer.
-/// - Assumes `component_level_ptr` is either NULL or a valid C string pointer.
+/// This function assumes:
+/// - `directory_ptr` is either NULL or a valid C string pointer.
+/// - `file_name_ptr` is either NULL or a valid C string pointer.
+/// - `file_format_ptr` is either NULL or a valid C string pointer.
+/// - `component_level_ptr` is either NULL or a valid C string pointer.
 ///
 /// # Panics
 ///
@@ -100,11 +100,11 @@ pub unsafe extern "C" fn logging_init(
     max_file_size: u64,
     max_backup_count: u32,
 ) -> LogGuard_API {
-    let level_stdout = map_log_level_to_filter(level_stdout);
-    let level_file = map_log_level_to_filter(level_file);
+    let level_stdout = crate::logging::map_log_level_to_filter(level_stdout);
+    let level_file = crate::logging::map_log_level_to_filter(level_file);
 
     let component_levels_json = unsafe { optional_bytes_to_json(component_levels_ptr) };
-    let component_levels = parse_component_levels(component_levels_json);
+    let component_levels = crate::logging::parse_component_levels(component_levels_json);
 
     let config = LoggerConfig::new(
         level_stdout,
@@ -131,11 +131,11 @@ pub unsafe extern "C" fn logging_init(
     let file_config = FileWriterConfig::new(directory, file_name, file_format, file_rotate);
 
     if u8_as_bool(is_bypassed) {
-        logging_set_bypass();
+        crate::logging::logging_set_bypass();
     }
 
     LogGuard_API(Box::new(
-        logging::init_logging(trader_id, instance_id, config, file_config).unwrap(),
+        crate::logging::init_logging(trader_id, instance_id, config, file_config).unwrap(),
     ))
 }
 
@@ -143,8 +143,9 @@ pub unsafe extern "C" fn logging_init(
 ///
 /// # Safety
 ///
-/// - Assumes `component_ptr` is a valid C string pointer.
-/// - Assumes `message_ptr` is a valid C string pointer.
+/// This function assumes:
+/// - `component_ptr` is a valid C string pointer.
+/// - `message_ptr` is a valid C string pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn logger_log(
     level: LogLevel,
@@ -162,8 +163,9 @@ pub unsafe extern "C" fn logger_log(
 ///
 /// # Safety
 ///
-/// - Assumes `machine_id_ptr` is a valid C string pointer.
-/// - Assumes `component_ptr` is a valid C string pointer.
+/// This function assumes:
+/// - `machine_id_ptr` is a valid C string pointer.
+/// - `component_ptr` is a valid C string pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn logging_log_header(
     trader_id: TraderId,
@@ -180,7 +182,7 @@ pub unsafe extern "C" fn logging_log_header(
 ///
 /// # Safety
 ///
-/// - Assumes `component_ptr` is a valid C string pointer.
+/// Assumes `component_ptr` is a valid C string pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn logging_log_sysinfo(component_ptr: *const c_char) {
     let component = unsafe { cstr_to_ustr(component_ptr) };
@@ -197,4 +199,40 @@ pub extern "C" fn logger_flush() {
 #[unsafe(no_mangle)]
 pub extern "C" fn logger_drop(log_guard: LogGuard_API) {
     drop(log_guard);
+}
+// FFI wrappers for logger control
+
+#[unsafe(no_mangle)]
+pub extern "C" fn logging_is_initialized() -> u8 {
+    u8::from(crate::logging::logging_is_initialized())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn logging_set_bypass() {
+    crate::logging::logging_set_bypass();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn logging_shutdown() {
+    crate::logging::logging_shutdown();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn logging_is_colored() -> u8 {
+    u8::from(crate::logging::logging_is_colored())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn logging_clock_set_realtime_mode() {
+    crate::logging::logging_clock_set_realtime_mode();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn logging_clock_set_static_mode() {
+    crate::logging::logging_clock_set_static_mode();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn logging_clock_set_static_time(time_ns: u64) {
+    crate::logging::logging_clock_set_static_time(time_ns);
 }

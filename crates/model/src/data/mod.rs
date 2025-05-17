@@ -221,16 +221,6 @@ impl From<InstrumentClose> for Data {
     }
 }
 
-// TODO: https://blog.rust-lang.org/2024/03/30/i128-layout-update.html
-// i128 and u128 is now FFI compatible. However, since the clippy lint
-// hasn't been removed yet. We'll suppress with #[cfg_attr(feature = "high-precision", allow(improper_ctypes_definitions))]
-#[unsafe(no_mangle)]
-#[cfg_attr(feature = "high-precision", allow(improper_ctypes_definitions))]
-pub extern "C" fn data_clone(data: &Data) -> Data {
-    // Dummy function for cbindgen to export types
-    data.clone()
-}
-
 /// Represents a data type including metadata.
 #[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(
@@ -298,9 +288,9 @@ impl DataType {
     ///
     /// # Panics
     ///
-    /// This function panics:
-    /// - If there is no metadata.
-    /// - If the `instrument_id` value contained in the metadata is invalid.
+    /// This function panics if:
+    /// - There is no metadata.
+    /// - The `instrument_id` value contained in the metadata is invalid.
     pub fn instrument_id(&self) -> Option<InstrumentId> {
         let metadata = self.metadata.as_ref().expect("metadata was `None`");
         let instrument_id = metadata.get("instrument_id")?;
@@ -314,9 +304,9 @@ impl DataType {
     ///
     /// # Panics
     ///
-    /// This function panics:
-    /// - If there is no metadata.
-    /// - If the `venue` value contained in the metadata is invalid.
+    /// This function panics if:
+    /// - There is no metadata.
+    /// - The `venue` value contained in the metadata is invalid.
     pub fn venue(&self) -> Option<Venue> {
         let metadata = self.metadata.as_ref().expect("metadata was `None`");
         let venue_str = metadata.get("venue")?;
@@ -327,9 +317,9 @@ impl DataType {
     ///
     /// # Panics
     ///
-    /// This function panics:
-    /// - If there is no metadata.
-    /// - If the `start` value contained in the metadata is invalid.
+    /// This function panics if:
+    /// - There is no metadata.
+    /// - The `start` value contained in the metadata is invalid.
     pub fn start(&self) -> Option<UnixNanos> {
         let metadata = self.metadata.as_ref()?;
         let start_str = metadata.get("start")?;
@@ -340,9 +330,9 @@ impl DataType {
     ///
     /// # Panics
     ///
-    /// This function panics:
-    /// - If there is no metadata.
-    /// - If the `end` value contained in the metadata is invalid.
+    /// This function panics if:
+    /// - There is no metadata.
+    /// - The `end` value contained in the metadata is invalid.
     pub fn end(&self) -> Option<UnixNanos> {
         let metadata = self.metadata.as_ref()?;
         let end_str = metadata.get("end")?;
@@ -353,9 +343,9 @@ impl DataType {
     ///
     /// # Panics
     ///
-    /// This function panics:
-    /// - If there is no metadata.
-    /// - If the `limit` value contained in the metadata is invalid.
+    /// This function panics if:
+    /// - There is no metadata.
+    /// - The `limit` value contained in the metadata is invalid.
     pub fn limit(&self) -> Option<usize> {
         let metadata = self.metadata.as_ref()?;
         let depth_str = metadata.get("limit")?;

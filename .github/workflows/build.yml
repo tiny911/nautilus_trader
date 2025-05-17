@@ -436,7 +436,17 @@ jobs:
           cleanup-local-dist: "false"
 
       - name: List local wheels
-        run: ls -1 dist/*.whl
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Safely list wheel files; only regular files, no directories
+          if [[ -d dist ]]; then
+            echo "Found dist directory, listing wheel files:"
+            find dist -type f -name '*.whl'
+          else
+            echo "No dist directory found"
+          fi
 
       - name: Upload wheels to GitHub release
         run: |
@@ -516,7 +526,8 @@ jobs:
 
       - name: Create GitHub release
         id: create-release
-        uses: actions/create-release@v1
+        # https://github.com/actions/create-release # v1.1.4
+        uses: actions/create-release@0cb9c9b65d5d1901c1f53e5e66eaf4afd303e70e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -547,6 +558,15 @@ jobs:
         with:
           python-version: "3.13"
           free-disk-space: "true"
+
+      - name: Clean existing dist directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Cleaning existing dist/ directory"
+          rm -rf dist
+          mkdir -p dist
 
       - name: Build sdist
         run: |

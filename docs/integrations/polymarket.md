@@ -13,21 +13,21 @@ while NautilusTrader abstracts the complexity of signing and preparing orders fo
 
 ## Installation
 
-To install the latest `nautilus_trader` package along with the `polymarket` dependencies using pip:
+To install NautilusTrader with Polymarket support:
 
-```
-pip install -U "nautilus_trader[polymarket]"
+```bash
+pip install --upgrade "nautilus_trader[polymarket]"
 ```
 
-To install from source using uv:
+To build from source with all extras (including Polymarket):
 
-```
-uv sync --extra polymarket
+```bash
+uv sync --all-extras
 ```
 
 ## Examples
 
-You can find functional live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/polymarket/).
+You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/polymarket/).
 
 ## Binary options
 
@@ -99,7 +99,7 @@ Polymarket CLOB Exchange to interact with your funds.
 
 Before running the script, ensure the following prerequisites are met:
 
-- Install the web3 Python package: `pip install -U web3==5.28`
+- Install the web3 Python package: `pip install --upgrade web3==5.28`
 - Have a **Polygon**-compatible wallet funded with some MATIC (used for gas fees).
 - Set the following environment variables in your shell:
   - `POLYGON_PRIVATE_KEY`: Your private key for the **Polygon**-compatible wallet.

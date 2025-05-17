@@ -101,7 +101,7 @@ impl TimeEvent {
     ///
     /// # Safety
     ///
-    /// - Assumes `name` is a valid string.
+    /// Assumes `name` is a valid string.
     #[must_use]
     pub const fn new(name: Ustr, event_id: UUID4, ts_event: UnixNanos, ts_init: UnixNanos) -> Self {
         Self {
@@ -181,7 +181,9 @@ impl From<PyObject> for TimeEventCallback {
 }
 
 // SAFETY: Message handlers cannot be sent across thread boundaries
+#[allow(unsafe_code)]
 unsafe impl Send for TimeEventCallback {}
+#[allow(unsafe_code)]
 unsafe impl Sync for TimeEventCallback {}
 
 #[repr(C)]

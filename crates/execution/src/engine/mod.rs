@@ -25,6 +25,7 @@ pub mod config;
 use std::{
     cell::{RefCell, RefMut},
     collections::{HashMap, HashSet},
+    fmt::Debug,
     rc::Rc,
     time::SystemTime,
 };
@@ -73,6 +74,14 @@ pub struct ExecutionEngine {
     external_order_claims: HashMap<InstrumentId, StrategyId>,
     pos_id_generator: PositionIdGenerator,
     config: ExecutionEngineConfig,
+}
+
+impl Debug for ExecutionEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(ExecutionEngine))
+            .field("client_count", &self.clients.len())
+            .finish()
+    }
 }
 
 impl ExecutionEngine {
@@ -127,6 +136,11 @@ impl ExecutionEngine {
 
     // -- REGISTRATION ----------------------------------------------------------------------------
 
+    /// Registers a new execution client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a client with the same ID is already registered.
     pub fn register_client(&mut self, client: Rc<dyn ExecutionClient>) -> anyhow::Result<()> {
         if self.clients.contains_key(&client.client_id()) {
             anyhow::bail!("Client already registered with ID {}", client.client_id());
@@ -150,6 +164,11 @@ impl ExecutionEngine {
         self.clients.get(client_id).cloned()
     }
 
+    /// Sets routing for a specific venue to a given client ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client ID is not registered.
     pub fn register_venue_routing(
         &mut self,
         client_id: ClientId,
@@ -169,6 +188,9 @@ impl ExecutionEngine {
     //     todo!();
     // }
 
+    /// # Errors
+    ///
+    /// Returns an error if no client is registered with the given ID.
     pub fn deregister_client(&mut self, client_id: ClientId) -> anyhow::Result<()> {
         if self.clients.remove(&client_id).is_some() {
             // Remove from routing map if present
@@ -184,6 +206,11 @@ impl ExecutionEngine {
     // -- COMMANDS --------------------------------------------------------------------------------
 
     #[allow(clippy::await_holding_refcell_ref)]
+    /// Loads persistent state into cache and rebuilds indices.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any cache operation fails.
     pub async fn load_cache(&mut self) -> anyhow::Result<()> {
         let ts = SystemTime::now();
 

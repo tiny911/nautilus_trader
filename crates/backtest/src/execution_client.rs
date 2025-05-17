@@ -19,7 +19,7 @@
 
 //! Provides a `BacktestExecutionClient` implementation for backtesting.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
 use nautilus_common::{cache::Cache, clock::Clock};
 use nautilus_core::UnixNanos;
@@ -47,6 +47,15 @@ pub struct BacktestExecutionClient {
     is_connected: bool,
     routing: bool,
     frozen_account: bool,
+}
+
+impl Debug for BacktestExecutionClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(BacktestExecutionClient))
+            .field("client_id", &self.base.client_id)
+            .field("routing", &self.routing)
+            .finish()
+    }
 }
 
 impl BacktestExecutionClient {

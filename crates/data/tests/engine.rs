@@ -36,7 +36,6 @@ use nautilus_common::{
         stubs::{get_message_saving_handler, get_saved_messages},
         switchboard::{self, MessagingSwitchboard},
     },
-    testing::init_logger_for_testing,
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_data::{client::DataClientAdapter, engine::DataEngine};
@@ -106,6 +105,27 @@ fn data_client(
 ) -> DataClientAdapter {
     let client = Box::new(MockDataClient::new(clock, cache, client_id, Some(venue)));
     DataClientAdapter::new(client_id, Some(venue), true, true, client)
+}
+
+// Test helper for registering a mock data client
+fn register_mock_client(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
+    routing: Option<Venue>,
+    recorder: &Rc<RefCell<Vec<DataCommand>>>,
+    data_engine: &mut DataEngine,
+) {
+    let client = MockDataClient::new_with_recorder(
+        clock,
+        cache,
+        client_id,
+        Some(venue),
+        Some(recorder.clone()),
+    );
+    let adapter = DataClientAdapter::new(client_id, Some(venue), true, true, Box::new(client));
+    data_engine.register_client(adapter, routing);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -275,110 +295,121 @@ fn test_register_default_client(
 }
 
 // ------------------------------------------------------------------------------------------------
-// Subscription and data flow tests
+// Test execute subscription commands
 // ------------------------------------------------------------------------------------------------
 
 #[rstest]
 fn test_execute_subscribe_custom_data(
     data_engine: Rc<RefCell<DataEngine>>,
-    data_client: DataClientAdapter,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
 ) {
-    let client_id = data_client.client_id;
-    let venue = data_client.venue;
-    data_engine.borrow_mut().register_client(data_client, None);
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
 
     let data_type = DataType::new(stringify!(String), None);
-    let cmd = SubscribeData::new(
+    let sub = SubscribeData::new(
         Some(client_id),
-        venue,
+        Some(venue),
         data_type.clone(),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::Data(cmd));
+    let sub_cmd = DataCommand::Subscribe(SubscribeCommand::Data(sub));
+    data_engine.execute(&sub_cmd);
 
-    let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    assert!(data_engine.subscribed_custom_data().contains(&data_type));
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
 
-    assert!(
-        data_engine
-            .borrow()
-            .subscribed_custom_data()
-            .contains(&data_type)
-    );
-
-    let cmd = UnsubscribeData::new(
+    let unsub = UnsubscribeData::new(
         Some(client_id),
-        venue,
+        Some(venue),
         data_type.clone(),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Data(cmd));
+    let unsub_cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Data(unsub));
+    data_engine.execute(&unsub_cmd);
 
-    msgbus::send(&endpoint, &cmd as &dyn Any);
-
-    assert!(
-        !data_engine
-            .borrow()
-            .subscribed_custom_data()
-            .contains(&data_type)
-    );
+    assert!(!data_engine.subscribed_custom_data().contains(&data_type));
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
 }
 
 #[rstest]
 fn test_execute_subscribe_book_deltas(
     audusd_sim: CurrencyPair,
     data_engine: Rc<RefCell<DataEngine>>,
-    data_client: DataClientAdapter,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
 ) {
-    let client_id = data_client.client_id;
-    let venue = data_client.venue;
-    data_engine.borrow_mut().register_client(data_client, None);
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
 
-    let cmd = SubscribeBookDeltas::new(
+    let sub_cmd = DataCommand::Subscribe(SubscribeCommand::BookDeltas(SubscribeBookDeltas::new(
         audusd_sim.id,
         BookType::L3_MBO,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
         true,
         None,
-    );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::BookDeltas(cmd));
-
-    let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    )));
+    data_engine.execute(&sub_cmd);
 
     assert!(
         data_engine
-            .borrow()
             .subscribed_book_deltas()
             .contains(&audusd_sim.id)
     );
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
 
-    let cmd = UnsubscribeBookDeltas::new(
-        audusd_sim.id,
-        Some(client_id),
-        venue,
-        UUID4::new(),
-        UnixNanos::default(),
-        None,
-    );
-    let cmd = DataCommand::Unsubscribe(UnsubscribeCommand::BookDeltas(cmd));
-
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    let unsub_cmd =
+        DataCommand::Unsubscribe(UnsubscribeCommand::BookDeltas(UnsubscribeBookDeltas::new(
+            audusd_sim.id,
+            Some(client_id),
+            Some(venue),
+            UUID4::new(),
+            UnixNanos::default(),
+            None,
+        )));
+    data_engine.execute(&unsub_cmd);
 
     assert!(
         !data_engine
-            .borrow()
             .subscribed_book_deltas()
             .contains(&audusd_sim.id)
     );
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
 }
 
 #[ignore = "Attempt to subtract with overflow"]
@@ -386,353 +417,669 @@ fn test_execute_subscribe_book_deltas(
 fn test_execute_subscribe_book_snapshots(
     audusd_sim: CurrencyPair,
     data_engine: Rc<RefCell<DataEngine>>,
-    data_client: DataClientAdapter,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
 ) {
-    let client_id = data_client.client_id;
-    let venue = data_client.venue;
-    data_engine.borrow_mut().register_client(data_client, None);
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
 
-    let cmd = SubscribeBookSnapshots::new(
+    let inst_any = InstrumentAny::CurrencyPair(audusd_sim);
+    data_engine.process(&inst_any as &dyn Any);
+
+    let sub = SubscribeBookSnapshots::new(
         audusd_sim.id,
         BookType::L2_MBP,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
         NonZeroUsize::new(1_000).unwrap(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::BookSnapshots(cmd));
-
-    let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    let sub_cmd = DataCommand::Subscribe(SubscribeCommand::BookSnapshots(sub));
+    data_engine.execute(&sub_cmd);
 
     assert!(
         data_engine
-            .borrow()
             .subscribed_book_snapshots()
             .contains(&audusd_sim.id)
     );
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
 
-    let cmd = UnsubscribeBookSnapshots::new(
+    let unsub = UnsubscribeBookSnapshots::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Unsubscribe(UnsubscribeCommand::BookSnapshots(cmd));
-
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    let unsub_cmd = DataCommand::Unsubscribe(UnsubscribeCommand::BookSnapshots(unsub));
+    data_engine.execute(&unsub_cmd);
 
     assert!(
         !data_engine
-            .borrow()
             .subscribed_book_snapshots()
             .contains(&audusd_sim.id)
     );
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
 }
 
 #[rstest]
 fn test_execute_subscribe_instrument(
     audusd_sim: CurrencyPair,
     data_engine: Rc<RefCell<DataEngine>>,
-    data_client: DataClientAdapter,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
 ) {
-    let client_id = data_client.client_id;
-    let venue = data_client.venue;
-    data_engine.borrow_mut().register_client(data_client, None);
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
 
-    let cmd = SubscribeInstrument::new(
+    let sub = SubscribeInstrument::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::Instrument(cmd));
-
-    let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    let sub_cmd = DataCommand::Subscribe(SubscribeCommand::Instrument(sub));
+    data_engine.execute(&sub_cmd);
 
     assert!(
         data_engine
-            .borrow()
             .subscribed_instruments()
             .contains(&audusd_sim.id)
     );
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
 
-    let cmd = UnsubscribeInstrument::new(
+    let unsub = UnsubscribeInstrument::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Instrument(cmd));
-
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    let unsub_cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Instrument(unsub));
+    data_engine.execute(&unsub_cmd);
 
     assert!(
         !data_engine
-            .borrow()
             .subscribed_instruments()
             .contains(&audusd_sim.id)
     );
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
 }
 
 #[rstest]
 fn test_execute_subscribe_quotes(
     audusd_sim: CurrencyPair,
     data_engine: Rc<RefCell<DataEngine>>,
-    data_client: DataClientAdapter,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
 ) {
-    let client_id = data_client.client_id;
-    let venue = data_client.venue;
-    data_engine.borrow_mut().register_client(data_client, None);
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
 
-    let cmd = SubscribeQuotes::new(
+    let sub = SubscribeQuotes::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::Quotes(cmd));
+    let sub_cmd = DataCommand::Subscribe(SubscribeCommand::Quotes(sub));
+    data_engine.execute(&sub_cmd);
 
-    let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    assert!(data_engine.subscribed_quotes().contains(&audusd_sim.id));
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
 
-    assert!(
-        data_engine
-            .borrow()
-            .subscribed_quotes()
-            .contains(&audusd_sim.id)
-    );
-
-    let cmd = UnsubscribeQuotes::new(
+    let unsub = UnsubscribeQuotes::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Quotes(cmd));
+    let unsub_cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Quotes(unsub));
+    data_engine.execute(&unsub_cmd);
 
-    msgbus::send(&endpoint, &cmd as &dyn Any);
-
-    assert!(
-        !data_engine
-            .borrow()
-            .subscribed_quotes()
-            .contains(&audusd_sim.id)
-    );
+    assert!(!data_engine.subscribed_quotes().contains(&audusd_sim.id));
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
 }
 
 #[rstest]
 fn test_execute_subscribe_trades(
     audusd_sim: CurrencyPair,
     data_engine: Rc<RefCell<DataEngine>>,
-    data_client: DataClientAdapter,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
 ) {
-    let client_id = data_client.client_id;
-    let venue = data_client.venue;
-    data_engine.borrow_mut().register_client(data_client, None);
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
 
-    let cmd = SubscribeTrades::new(
+    let sub = SubscribeTrades::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::Trades(cmd));
+    let sub_cmd = DataCommand::Subscribe(SubscribeCommand::Trades(sub));
+    data_engine.execute(&sub_cmd);
 
-    let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    assert!(data_engine.subscribed_trades().contains(&audusd_sim.id));
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
 
-    assert!(
-        data_engine
-            .borrow()
-            .subscribed_trades()
-            .contains(&audusd_sim.id)
-    );
-
-    let cmd = UnsubscribeTrades::new(
+    let ubsub = UnsubscribeTrades::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Trades(cmd));
+    let unsub_cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Trades(ubsub));
+    data_engine.execute(&unsub_cmd);
 
-    msgbus::send(&endpoint, &cmd as &dyn Any);
-
-    assert!(
-        !data_engine
-            .borrow()
-            .subscribed_trades()
-            .contains(&audusd_sim.id)
-    );
+    assert!(!data_engine.subscribed_trades().contains(&audusd_sim.id));
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
 }
 
 #[rstest]
 fn test_execute_subscribe_bars(
     audusd_sim: CurrencyPair,
     data_engine: Rc<RefCell<DataEngine>>,
-    data_client: DataClientAdapter,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
 ) {
-    init_logger_for_testing(None).unwrap(); // TODO: Remove once initial development completed
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
 
-    let audusd_sim = InstrumentAny::CurrencyPair(audusd_sim);
-    data_engine.borrow_mut().process(&audusd_sim as &dyn Any);
-
-    let client_id = data_client.client_id;
-    let venue = data_client.venue;
-    data_engine.borrow_mut().register_client(data_client, None);
+    let inst_any = InstrumentAny::CurrencyPair(audusd_sim);
+    data_engine.process(&inst_any as &dyn Any);
 
     let bar_type = BarType::from("AUD/USD.SIM-1-MINUTE-LAST-INTERNAL");
 
-    let cmd = SubscribeBars::new(
+    let sub = SubscribeBars::new(
         bar_type,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         false,
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::Bars(cmd));
+    let sub_cmd = DataCommand::Subscribe(SubscribeCommand::Bars(sub));
+    data_engine.execute(&sub_cmd);
 
-    let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    assert!(data_engine.subscribed_bars().contains(&bar_type));
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
 
-    assert!(data_engine.borrow().subscribed_bars().contains(&bar_type));
-
-    let cmd = UnsubscribeBars::new(
+    let unsub = UnsubscribeBars::new(
         bar_type,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Bars(cmd));
-
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    let unsub_cmd = DataCommand::Unsubscribe(UnsubscribeCommand::Bars(unsub));
+    data_engine.execute(&unsub_cmd);
 
     assert_eq!(audusd_sim.id(), bar_type.instrument_id());
-    assert!(!data_engine.borrow().subscribed_bars().contains(&bar_type));
+    assert!(!data_engine.subscribed_bars().contains(&bar_type));
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
 }
 
 #[rstest]
 fn test_execute_subscribe_mark_prices(
     audusd_sim: CurrencyPair,
     data_engine: Rc<RefCell<DataEngine>>,
-    data_client: DataClientAdapter,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
 ) {
-    let client_id = data_client.client_id;
-    let venue = data_client.venue;
-    data_engine.borrow_mut().register_client(data_client, None);
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
 
-    let cmd = SubscribeMarkPrices::new(
+    let sub = SubscribeMarkPrices::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::MarkPrices(cmd));
-
-    let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    let sub_cmd = DataCommand::Subscribe(SubscribeCommand::MarkPrices(sub));
+    data_engine.execute(&sub_cmd);
 
     assert!(
         data_engine
-            .borrow()
             .subscribed_mark_prices()
             .contains(&audusd_sim.id)
     );
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
 
-    let cmd = UnsubscribeMarkPrices::new(
+    let unsub = UnsubscribeMarkPrices::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Unsubscribe(UnsubscribeCommand::MarkPrices(cmd));
-
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    let unsub_cmd = DataCommand::Unsubscribe(UnsubscribeCommand::MarkPrices(unsub));
+    data_engine.execute(&unsub_cmd);
 
     assert!(
         !data_engine
-            .borrow()
             .subscribed_mark_prices()
             .contains(&audusd_sim.id)
     );
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
 }
 
 #[rstest]
 fn test_execute_subscribe_index_prices(
     audusd_sim: CurrencyPair,
     data_engine: Rc<RefCell<DataEngine>>,
-    data_client: DataClientAdapter,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
 ) {
-    let client_id = data_client.client_id;
-    let venue = data_client.venue;
-    data_engine.borrow_mut().register_client(data_client, None);
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
 
-    let cmd = SubscribeIndexPrices::new(
+    let sub_cmd = DataCommand::Subscribe(SubscribeCommand::IndexPrices(SubscribeIndexPrices::new(
         audusd_sim.id,
         Some(client_id),
-        venue,
+        Some(venue),
         UUID4::new(),
         UnixNanos::default(),
         None,
-    );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::IndexPrices(cmd));
-
-    let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    )));
+    data_engine.execute(&sub_cmd);
 
     assert!(
         data_engine
-            .borrow()
             .subscribed_index_prices()
             .contains(&audusd_sim.id)
     );
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
 
-    let cmd = UnsubscribeIndexPrices::new(
-        audusd_sim.id,
-        Some(client_id),
+    let unsub_cmd = DataCommand::Unsubscribe(UnsubscribeCommand::IndexPrices(
+        UnsubscribeIndexPrices::new(
+            audusd_sim.id,
+            Some(client_id),
+            Some(venue),
+            UUID4::new(),
+            UnixNanos::default(),
+            None,
+        ),
+    ));
+    data_engine.execute(&unsub_cmd);
+
+    assert!(
+        !data_engine
+            .subscribed_index_prices()
+            .contains(&audusd_sim.id)
+    );
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Test execute request commands
+// ------------------------------------------------------------------------------------------------
+
+#[rstest]
+fn test_execute_request_data(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    data_engine: Rc<RefCell<DataEngine>>,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
         venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
+
+    let req = RequestData {
+        client_id,
+        data_type: DataType::new("X", None),
+        request_id: UUID4::new(),
+        ts_init: UnixNanos::default(),
+        params: None,
+    };
+    let cmd = DataCommand::Request(RequestCommand::Data(req));
+    data_engine.execute(&cmd);
+
+    assert_eq!(recorder.borrow()[0], cmd);
+}
+
+#[rstest]
+fn test_execute_request_instrument(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    data_engine: Rc<RefCell<DataEngine>>,
+    audusd_sim: CurrencyPair,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
+
+    let req = RequestInstrument::new(
+        audusd_sim.id,
+        None,
+        None,
+        Some(client_id),
         UUID4::new(),
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Unsubscribe(UnsubscribeCommand::IndexPrices(cmd));
+    let cmd = DataCommand::Request(RequestCommand::Instrument(req));
+    data_engine.execute(&cmd);
 
-    msgbus::send(&endpoint, &cmd as &dyn Any);
-
-    assert!(
-        !data_engine
-            .borrow()
-            .subscribed_index_prices()
-            .contains(&audusd_sim.id)
-    );
+    assert_eq!(recorder.borrow()[0], cmd);
 }
+
+#[rstest]
+fn test_execute_request_instruments(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    data_engine: Rc<RefCell<DataEngine>>,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
+
+    let req = RequestInstruments::new(
+        None,
+        None,
+        Some(client_id),
+        Some(venue),
+        UUID4::new(),
+        UnixNanos::default(),
+        None,
+    );
+    let cmd = DataCommand::Request(RequestCommand::Instruments(req));
+    data_engine.execute(&cmd);
+
+    assert_eq!(recorder.borrow()[0], cmd);
+}
+
+#[rstest]
+fn test_execute_request_book_snapshot(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    data_engine: Rc<RefCell<DataEngine>>,
+    audusd_sim: CurrencyPair,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
+
+    let req = RequestBookSnapshot::new(
+        audusd_sim.id,
+        None, // depth
+        Some(client_id),
+        UUID4::new(),
+        UnixNanos::default(),
+        None, // params
+    );
+    let cmd = DataCommand::Request(RequestCommand::BookSnapshot(req));
+    data_engine.execute(&cmd);
+
+    assert_eq!(recorder.borrow()[0], cmd);
+}
+
+#[rstest]
+fn test_execute_request_quotes(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    data_engine: Rc<RefCell<DataEngine>>,
+    audusd_sim: CurrencyPair,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
+
+    let req = RequestQuotes::new(
+        audusd_sim.id,
+        None, // start
+        None, // end
+        None, // limit
+        Some(client_id),
+        UUID4::new(),
+        UnixNanos::default(),
+        None, // params
+    );
+    let cmd = DataCommand::Request(RequestCommand::Quotes(req));
+    data_engine.execute(&cmd);
+
+    assert_eq!(recorder.borrow()[0], cmd);
+}
+
+#[rstest]
+fn test_execute_request_trades(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    data_engine: Rc<RefCell<DataEngine>>,
+    audusd_sim: CurrencyPair,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
+
+    let req = RequestTrades::new(
+        audusd_sim.id,
+        None, // start
+        None, // end
+        None, // limit
+        Some(client_id),
+        UUID4::new(),
+        UnixNanos::default(),
+        None, // params
+    );
+    let cmd = DataCommand::Request(RequestCommand::Trades(req));
+    data_engine.execute(&cmd);
+
+    assert_eq!(recorder.borrow()[0], cmd);
+}
+
+#[rstest]
+fn test_execute_request_bars(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    data_engine: Rc<RefCell<DataEngine>>,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
+
+    let req = RequestBars::new(
+        BarType::from("AUD/USD.SIM-1-MINUTE-LAST-INTERNAL"),
+        None, // start
+        None, // end
+        None, // limit
+        Some(client_id),
+        UUID4::new(),
+        UnixNanos::default(),
+        None, // params
+    );
+    let cmd = DataCommand::Request(RequestCommand::Bars(req));
+    data_engine.execute(&cmd);
+
+    assert_eq!(recorder.borrow()[0], cmd);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Test process data flows
+// ------------------------------------------------------------------------------------------------
 
 #[rstest]
 fn test_process_instrument(
@@ -746,7 +1093,7 @@ fn test_process_instrument(
 
     let audusd_sim = InstrumentAny::CurrencyPair(audusd_sim);
 
-    let cmd = SubscribeInstrument::new(
+    let sub = SubscribeInstrument::new(
         audusd_sim.id(),
         Some(client_id),
         venue,
@@ -754,7 +1101,7 @@ fn test_process_instrument(
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::Instrument(cmd));
+    let cmd = DataCommand::Subscribe(SubscribeCommand::Instrument(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
     msgbus::send(&endpoint, &cmd as &dyn Any);
@@ -786,7 +1133,7 @@ fn test_process_book_delta(
     let venue = data_client.venue;
     data_engine.borrow_mut().register_client(data_client, None);
 
-    let cmd = SubscribeBookDeltas::new(
+    let sub = SubscribeBookDeltas::new(
         audusd_sim.id,
         BookType::L3_MBO,
         Some(client_id),
@@ -797,7 +1144,7 @@ fn test_process_book_delta(
         true,
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::BookDeltas(cmd));
+    let cmd = DataCommand::Subscribe(SubscribeCommand::BookDeltas(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
     msgbus::send(&endpoint, &cmd as &dyn Any);
@@ -825,7 +1172,7 @@ fn test_process_book_deltas(
     let venue = data_client.venue;
     data_engine.borrow_mut().register_client(data_client, None);
 
-    let cmd = SubscribeBookDeltas::new(
+    let sub = SubscribeBookDeltas::new(
         audusd_sim.id,
         BookType::L3_MBO,
         Some(client_id),
@@ -836,7 +1183,7 @@ fn test_process_book_deltas(
         true,
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::BookDeltas(cmd));
+    let cmd = DataCommand::Subscribe(SubscribeCommand::BookDeltas(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
     msgbus::send(&endpoint, &cmd as &dyn Any);
@@ -866,7 +1213,7 @@ fn test_process_book_depth10(
     let venue = data_client.venue;
     data_engine.borrow_mut().register_client(data_client, None);
 
-    let cmd = SubscribeBookDepth10::new(
+    let sub = SubscribeBookDepth10::new(
         audusd_sim.id,
         BookType::L3_MBO,
         Some(client_id),
@@ -877,7 +1224,7 @@ fn test_process_book_depth10(
         true,
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::BookDepth10(cmd));
+    let cmd = DataCommand::Subscribe(SubscribeCommand::BookDepth10(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
     msgbus::send(&endpoint, &cmd as &dyn Any);
@@ -906,7 +1253,7 @@ fn test_process_quote_tick(
     let venue = data_client.venue;
     data_engine.borrow_mut().register_client(data_client, None);
 
-    let cmd = SubscribeQuotes::new(
+    let sub = SubscribeQuotes::new(
         audusd_sim.id,
         Some(client_id),
         venue,
@@ -914,7 +1261,7 @@ fn test_process_quote_tick(
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::Quotes(cmd));
+    let cmd = DataCommand::Subscribe(SubscribeCommand::Quotes(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
     msgbus::send(&endpoint, &cmd as &dyn Any);
@@ -944,7 +1291,7 @@ fn test_process_trade_tick(
     let venue = data_client.venue;
     data_engine.borrow_mut().register_client(data_client, None);
 
-    let cmd = SubscribeTrades::new(
+    let sub = SubscribeTrades::new(
         audusd_sim.id,
         Some(client_id),
         venue,
@@ -952,7 +1299,7 @@ fn test_process_trade_tick(
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::Trades(cmd));
+    let cmd = DataCommand::Subscribe(SubscribeCommand::Trades(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
     msgbus::send(&endpoint, &cmd as &dyn Any);
@@ -982,7 +1329,7 @@ fn test_process_mark_price(
     let venue = data_client.venue;
     data_engine.borrow_mut().register_client(data_client, None);
 
-    let cmd = SubscribeMarkPrices::new(
+    let sub = SubscribeMarkPrices::new(
         audusd_sim.id,
         Some(client_id),
         venue,
@@ -990,7 +1337,7 @@ fn test_process_mark_price(
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::MarkPrices(cmd));
+    let cmd = DataCommand::Subscribe(SubscribeCommand::MarkPrices(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
     msgbus::send(&endpoint, &cmd as &dyn Any);
@@ -1036,7 +1383,7 @@ fn test_process_index_price(
     let venue = data_client.venue;
     data_engine.borrow_mut().register_client(data_client, None);
 
-    let cmd = SubscribeIndexPrices::new(
+    let sub = SubscribeIndexPrices::new(
         audusd_sim.id,
         Some(client_id),
         venue,
@@ -1044,7 +1391,7 @@ fn test_process_index_price(
         UnixNanos::default(),
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::IndexPrices(cmd));
+    let cmd = DataCommand::Subscribe(SubscribeCommand::IndexPrices(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
     msgbus::send(&endpoint, &cmd as &dyn Any);
@@ -1084,7 +1431,7 @@ fn test_process_bar(data_engine: Rc<RefCell<DataEngine>>, data_client: DataClien
 
     let bar = Bar::default();
 
-    let cmd = SubscribeBars::new(
+    let sub = SubscribeBars::new(
         bar.bar_type,
         Some(client_id),
         venue,
@@ -1093,7 +1440,7 @@ fn test_process_bar(data_engine: Rc<RefCell<DataEngine>>, data_client: DataClien
         false,
         None,
     );
-    let cmd = DataCommand::Subscribe(SubscribeCommand::Bars(cmd));
+    let cmd = DataCommand::Subscribe(SubscribeCommand::Bars(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
     msgbus::send(&endpoint, &cmd as &dyn Any);
@@ -1110,254 +1457,4 @@ fn test_process_bar(data_engine: Rc<RefCell<DataEngine>>, data_client: DataClien
     assert_eq!(cache.bar(&bar.bar_type), Some(bar).as_ref());
     assert_eq!(messages.len(), 1);
     assert!(messages.contains(&bar));
-}
-
-/// Helper to setup engine with a recorder client and send a request command.
-fn send_request_cmd(
-    clock: Rc<RefCell<TestClock>>,
-    cache: Rc<RefCell<Cache>>,
-    client_id: ClientId,
-    venue: Venue,
-    data_engine: &mut DataEngine,
-    cmd: DataCommand,
-    recorder: &Rc<RefCell<Vec<DataCommand>>>,
-) {
-    let rec = MockDataClient::new_with_recorder(
-        clock,
-        cache,
-        client_id,
-        Some(venue),
-        Some(recorder.clone()),
-    );
-    let adapter = DataClientAdapter::new(client_id, Some(venue), true, true, Box::new(rec));
-    data_engine.register_client(adapter, None);
-    data_engine.execute(&cmd);
-}
-
-#[rstest]
-fn test_request_data(
-    clock: Rc<RefCell<TestClock>>,
-    cache: Rc<RefCell<Cache>>,
-    data_engine: Rc<RefCell<DataEngine>>,
-    client_id: ClientId,
-    venue: Venue,
-) {
-    let mut eng = data_engine.borrow_mut();
-    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
-    let req = RequestData {
-        client_id,
-        data_type: DataType::new("X", None),
-        request_id: UUID4::new(),
-        ts_init: UnixNanos::default(),
-        params: None,
-    };
-    let cmd = DataCommand::Request(RequestCommand::Data(req));
-    send_request_cmd(
-        clock,
-        cache,
-        client_id,
-        venue,
-        &mut eng,
-        cmd.clone(),
-        &recorder,
-    );
-    assert_eq!(recorder.borrow()[0], cmd);
-}
-
-#[rstest]
-fn test_request_instrument(
-    clock: Rc<RefCell<TestClock>>,
-    cache: Rc<RefCell<Cache>>,
-    data_engine: Rc<RefCell<DataEngine>>,
-    audusd_sim: CurrencyPair,
-    client_id: ClientId,
-    venue: Venue,
-) {
-    let mut eng = data_engine.borrow_mut();
-    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
-    let req = RequestInstrument::new(
-        audusd_sim.id,
-        None,
-        None,
-        Some(client_id),
-        UUID4::new(),
-        UnixNanos::default(),
-        None,
-    );
-    let cmd = DataCommand::Request(RequestCommand::Instrument(req));
-    send_request_cmd(
-        clock,
-        cache,
-        client_id,
-        venue,
-        &mut eng,
-        cmd.clone(),
-        &recorder,
-    );
-    assert_eq!(recorder.borrow()[0], cmd);
-}
-
-#[rstest]
-fn test_request_instruments(
-    clock: Rc<RefCell<TestClock>>,
-    cache: Rc<RefCell<Cache>>,
-    data_engine: Rc<RefCell<DataEngine>>,
-    client_id: ClientId,
-    venue: Venue,
-) {
-    let mut eng = data_engine.borrow_mut();
-    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
-    let req = RequestInstruments::new(
-        None,
-        None,
-        Some(client_id),
-        Some(venue),
-        UUID4::new(),
-        UnixNanos::default(),
-        None,
-    );
-    let cmd = DataCommand::Request(RequestCommand::Instruments(req));
-    send_request_cmd(
-        clock,
-        cache,
-        client_id,
-        venue,
-        &mut eng,
-        cmd.clone(),
-        &recorder,
-    );
-    assert_eq!(recorder.borrow()[0], cmd);
-}
-
-#[rstest]
-fn test_request_book_snapshot(
-    clock: Rc<RefCell<TestClock>>,
-    cache: Rc<RefCell<Cache>>,
-    data_engine: Rc<RefCell<DataEngine>>,
-    audusd_sim: CurrencyPair,
-    client_id: ClientId,
-    venue: Venue,
-) {
-    let mut eng = data_engine.borrow_mut();
-    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
-    let req = RequestBookSnapshot::new(
-        audusd_sim.id,
-        None, // depth
-        Some(client_id),
-        UUID4::new(),
-        UnixNanos::default(),
-        None, // params
-    );
-    let cmd = DataCommand::Request(RequestCommand::BookSnapshot(req));
-    send_request_cmd(
-        clock,
-        cache,
-        client_id,
-        venue,
-        &mut eng,
-        cmd.clone(),
-        &recorder,
-    );
-    assert_eq!(recorder.borrow()[0], cmd);
-}
-
-#[rstest]
-fn test_request_quotes(
-    clock: Rc<RefCell<TestClock>>,
-    cache: Rc<RefCell<Cache>>,
-    data_engine: Rc<RefCell<DataEngine>>,
-    audusd_sim: CurrencyPair,
-    client_id: ClientId,
-    venue: Venue,
-) {
-    let mut eng = data_engine.borrow_mut();
-    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
-    let req = RequestQuotes::new(
-        audusd_sim.id,
-        None, // start
-        None, // end
-        None, // limit
-        Some(client_id),
-        UUID4::new(),
-        UnixNanos::default(),
-        None, // params
-    );
-    let cmd = DataCommand::Request(RequestCommand::Quotes(req));
-    send_request_cmd(
-        clock,
-        cache,
-        client_id,
-        venue,
-        &mut eng,
-        cmd.clone(),
-        &recorder,
-    );
-    assert_eq!(recorder.borrow()[0], cmd);
-}
-
-#[rstest]
-fn test_request_trades(
-    clock: Rc<RefCell<TestClock>>,
-    cache: Rc<RefCell<Cache>>,
-    data_engine: Rc<RefCell<DataEngine>>,
-    audusd_sim: CurrencyPair,
-    client_id: ClientId,
-    venue: Venue,
-) {
-    let mut eng = data_engine.borrow_mut();
-    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
-    let req = RequestTrades::new(
-        audusd_sim.id,
-        None, // start
-        None, // end
-        None, // limit
-        Some(client_id),
-        UUID4::new(),
-        UnixNanos::default(),
-        None, // params
-    );
-    let cmd = DataCommand::Request(RequestCommand::Trades(req));
-    send_request_cmd(
-        clock,
-        cache,
-        client_id,
-        venue,
-        &mut eng,
-        cmd.clone(),
-        &recorder,
-    );
-    assert_eq!(recorder.borrow()[0], cmd);
-}
-
-#[rstest]
-fn test_request_bars(
-    clock: Rc<RefCell<TestClock>>,
-    cache: Rc<RefCell<Cache>>,
-    data_engine: Rc<RefCell<DataEngine>>,
-    client_id: ClientId,
-    venue: Venue,
-) {
-    let mut eng = data_engine.borrow_mut();
-    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
-    let req = RequestBars::new(
-        BarType::from("AUD/USD.SIM-1-MINUTE-LAST-INTERNAL"),
-        None, // start
-        None, // end
-        None, // limit
-        Some(client_id),
-        UUID4::new(),
-        UnixNanos::default(),
-        None, // params
-    );
-    let cmd = DataCommand::Request(RequestCommand::Bars(req));
-    send_request_cmd(
-        clock,
-        cache,
-        client_id,
-        venue,
-        &mut eng,
-        cmd.clone(),
-        &recorder,
-    );
-    assert_eq!(recorder.borrow()[0], cmd);
 }

@@ -11,21 +11,21 @@ execution with Bybit.
 
 ## Installation
 
-To install the latest `nautilus_trader` package along with the `bybit` dependencies using pip:
+To install NautilusTrader with Bybit support:
 
-```
-pip install -U "nautilus_trader[bybit]"
+```bash
+pip install --upgrade "nautilus_trader[bybit]"
 ```
 
-To install from source using uv:
+To build from source with all extras (including Bybit):
 
-```
-uv sync --extra bybit
+```bash
+uv sync --all-extras
 ```
 
 ## Examples
 
-You can find functional live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/bybit/).
+You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/bybit/).
 
 ## Overview
 
@@ -140,7 +140,7 @@ data and execution clients. To achieve this, add a `BYBIT` section to your clien
 configuration(s):
 
 ```python
-from nautilus_trader.adapters.bybit.common.enums import BybitProductType
+from nautilus_trader.adapters.bybit import BybitProductType
 from nautilus_trader.live.node import TradingNode
 
 config = TradingNodeConfig(
@@ -169,8 +169,8 @@ config = TradingNodeConfig(
 Then, create a `TradingNode` and add the client factories:
 
 ```python
-from nautilus_trader.adapters.bybit.factories import BybitLiveDataClientFactory
-from nautilus_trader.adapters.bybit.factories import BybitLiveExecClientFactory
+from nautilus_trader.adapters.bybit import BybitLiveDataClientFactory
+from nautilus_trader.adapters.bybit import BybitLiveExecClientFactory
 from nautilus_trader.live.node import TradingNode
 
 # Instantiate the live trading node with a configuration

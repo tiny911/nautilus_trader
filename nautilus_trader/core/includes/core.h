@@ -60,6 +60,21 @@ typedef struct UUID4_t {
     uint8_t value[37];
 } UUID4_t;
 
+void cvec_drop(struct CVec cvec);
+
+struct CVec cvec_new(void);
+
+/**
+ * Converts a UNIX nanoseconds timestamp to an ISO 8601 (RFC 3339) format C string pointer.
+ */
+const char *unix_nanos_to_iso8601_cstr(uint64_t timestamp_ns);
+
+/**
+ * Converts a UNIX nanoseconds timestamp to an ISO 8601 (RFC 3339) format C string pointer
+ * with millisecond precision.
+ */
+const char *unix_nanos_to_iso8601_millis_cstr(uint64_t timestamp_ns);
+
 /**
  * Converts seconds to nanoseconds (ns).
  */
@@ -95,27 +110,12 @@ uint64_t nanos_to_millis(uint64_t nanos);
  */
 uint64_t nanos_to_micros(uint64_t nanos);
 
-void cvec_drop(struct CVec cvec);
-
-struct CVec cvec_new(void);
-
-/**
- * Converts a UNIX nanoseconds timestamp to an ISO 8601 (RFC 3339) format C string pointer.
- */
-const char *unix_nanos_to_iso8601_cstr(uint64_t timestamp_ns);
-
-/**
- * Converts a UNIX nanoseconds timestamp to an ISO 8601 (RFC 3339) format C string pointer
- * with millisecond precision.
- */
-const char *unix_nanos_to_iso8601_millis_cstr(uint64_t timestamp_ns);
-
 /**
  * Return the decimal precision inferred from the given C string.
  *
  * # Safety
  *
- * - Assumes `ptr` is a valid C string pointer.
+ * Assumes `ptr` is a valid C string pointer.
  *
  * # Panics
  *
@@ -128,7 +128,7 @@ uint8_t precision_from_cstr(const char *ptr);
  *
  * # Safety
  *
- * - Assumes `ptr` is a valid C string pointer.
+ * Assumes `ptr` is a valid C string pointer.
  *
  * # Panics
  *
@@ -156,7 +156,7 @@ struct UUID4_t uuid4_new(void);
  *
  * # Safety
  *
- * - Assumes `ptr` is a valid C string pointer.
+ * Assumes `ptr` is a valid C string pointer.
  *
  * # Panics
  *

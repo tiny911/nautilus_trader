@@ -21,7 +21,10 @@ pub mod queries;
 
 use std::time::Duration;
 
-use nautilus_common::msgbus::database::{DatabaseConfig, MessageBusConfig};
+use nautilus_common::{
+    logging::log_task_awaiting,
+    msgbus::database::{DatabaseConfig, MessageBusConfig},
+};
 use nautilus_core::UUID4;
 use nautilus_model::identifiers::TraderId;
 use redis::RedisError;
@@ -35,7 +38,8 @@ const REDIS_FLUSHDB: &str = "FLUSHDB";
 
 async fn await_handle(handle: Option<tokio::task::JoinHandle<()>>, task_name: &str) {
     if let Some(handle) = handle {
-        tracing::debug!("Awaiting task '{task_name}'");
+        log_task_awaiting(task_name);
+
         let timeout = Duration::from_secs(2);
         match tokio::time::timeout(timeout, handle).await {
             Ok(result) => {
@@ -50,7 +54,7 @@ async fn await_handle(handle: Option<tokio::task::JoinHandle<()>>, task_name: &s
     }
 }
 
-/// Parse a Redis connection URL from the given database config, returning the
+/// Parses a Redis connection URL from the given database config, returning the
 /// full URL and a redacted version with the password obfuscated.
 ///
 /// Authentication matrix handled:
@@ -61,6 +65,10 @@ async fn await_handle(handle: Option<tokio::task::JoinHandle<()>>, task_name: &s
 /// │ empty     │ non-empty │ :pass@                     │
 /// │ empty     │ empty     │ (omitted)                  │
 /// └───────────┴───────────┴────────────────────────────┘
+///
+/// # Panics
+///
+/// Panics if a username is provided without a corresponding password.
 #[must_use]
 pub fn get_redis_url(config: DatabaseConfig) -> (String, String) {
     let host = config.host.unwrap_or("127.0.0.1".to_string());
@@ -106,14 +114,17 @@ pub fn get_redis_url(config: DatabaseConfig) -> (String, String) {
 
     (url, redacted_url)
 }
-
-/// Create a new Redis database connection from the given database config.
+/// Creates a new Redis connection manager based on the provided database `config` and connection name.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Constructing the Redis client fails.
+/// - Establishing or configuring the connection manager fails.
 ///
 /// In case of reconnection issues, the connection will retry reconnection
 /// `number_of_retries` times, with an exponentially increasing delay, calculated as
 /// `rand(0 .. factor * (exponent_base ^ current-try))`.
-///
-/// Apply a maximum delay. No retry delay will be longer than this `max_delay` .
 ///
 /// The new connection will time out operations after `response_timeout` has passed.
 /// Each connection attempt to the server will time out after `connection_timeout`.
@@ -163,7 +174,11 @@ pub async fn create_redis_connection(
     Ok(con)
 }
 
-/// Flush the Redis database for the given connection.
+/// Flushes the entire Redis database for the specified connection.
+///
+/// # Errors
+///
+/// Returns an error if the FLUSHDB command fails.
 pub async fn flush_redis(
     con: &mut redis::aio::ConnectionManager,
 ) -> anyhow::Result<(), RedisError> {
@@ -197,7 +212,11 @@ pub fn get_stream_key(
     stream_key
 }
 
-/// Parses the Redis version from the "INFO" command output.
+/// Retrieves and parses the Redis server version via the INFO command.
+///
+/// # Errors
+///
+/// Returns an error if the INFO command fails or version parsing fails.
 pub async fn get_redis_version(
     conn: &mut redis::aio::ConnectionManager,
 ) -> anyhow::Result<Version> {

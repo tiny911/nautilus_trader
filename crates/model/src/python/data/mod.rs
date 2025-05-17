@@ -99,9 +99,8 @@ pub fn data_to_pycapsule(py: Python, data: Data) -> PyObject {
 ///
 /// # Panics
 ///
-/// This function panics:
-/// - If the capsule cannot be downcast to a `PyCapsule`, indicating a type mismatch
-/// or improper capsule handling.
+/// Panics if the capsule cannot be downcast to a `PyCapsule`, indicating a type
+/// mismatch or improper capsule handling.
 ///
 /// # Safety
 ///
@@ -109,6 +108,7 @@ pub fn data_to_pycapsule(py: Python, data: Data) -> PyObject {
 /// management. The caller must ensure the `PyCapsule` contains a valid `CVec` pointer.
 /// Incorrect usage can lead to memory corruption or undefined behavior.
 #[pyfunction]
+#[allow(unsafe_code)]
 #[cfg(feature = "ffi")]
 pub fn drop_cvec_pycapsule(capsule: &Bound<'_, PyAny>) {
     let capsule: &Bound<'_, PyCapsule> = capsule

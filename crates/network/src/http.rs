@@ -189,7 +189,7 @@ impl From<String> for HttpClientError {
 /// support for rate limiting, timeouts, and custom headers. The client is
 /// built on top of `reqwest` and can be used for both synchronous and
 /// asynchronous HTTP requests.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.network")
@@ -203,6 +203,10 @@ pub struct HttpClient {
 
 impl HttpClient {
     /// Creates a new [`HttpClient`] instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any header key or value is invalid, or if building the underlying `reqwest::Client` fails.
     #[must_use]
     pub fn new(
         headers: HashMap<String, String>,
