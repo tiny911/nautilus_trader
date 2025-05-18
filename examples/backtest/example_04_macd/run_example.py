@@ -35,6 +35,8 @@ from nautilus_trader.model.instruments.base import Instrument
 from nautilus_trader.model.objects import Money
 from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
 
+from nautilus_trader.model.identifiers import InstrumentId
+
 
 log = Logger(__name__)
 
@@ -51,33 +53,35 @@ if __name__ == "__main__":
         ),
     )
 
-
     engine = BacktestEngine(config=engine_config)
 
     # ----------------------------------------------------------------------------------
     # 2. Load all data from catalog
     # ----------------------------------------------------------------------------------
     data_catalog = ParquetDataCatalog("./data_catalog")
-    
+
     # Get all instruments and bars
     all_instruments = data_catalog.instruments()
     # all_bars = data_catalog.bars()
-    # log.info(f"Loaded {len(all_instruments)} instruments and {len(all_bars)} bars from catalog", 
+    # log.info(f"Loaded {len(all_instruments)} instruments and {len(all_bars)} bars from catalog",
     #          color=LogColor.YELLOW)
 
-    log.info(f"all_instruments:\n{all_instruments}", color=LogColor.YELLOW)
-
+    # log.info(f"all_instruments:\n{all_instruments}", color=LogColor.YELLOW)
 
     equity = all_instruments[1]
-
     log.info(f"equity id:\n{equity.id}", color=LogColor.YELLOW)
+
+    hs300_index_instrument_id = InstrumentId.from_str("000300.SH.SZSE")
+    queryHS300Results = list(filter(lambda el: el.id == hs300_index_instrument_id, all_instruments))
+    log.info(f"filter result:{queryHS300Results}", color=LogColor.GREEN)
 
     data_cls = type(equity)
 
+    bar = data_catalog.query(
+        data_cls=data_cls, instrument_ids=[equity.id, hs300_index_instrument_id]
+    )
 
-    bar = data_catalog.query(data_cls=data_cls, instrument_ids=[equity.id])
-
-    hs300bar = data_catalog.query(data_cls=data_cls, instrument_ids=["000300.SH.SZSE"])
+    hs300bar = data_catalog.query(data_cls=data_cls, instrument_ids=[hs300_index_instrument_id])
 
     log.info(f"instru :\n{bar}", color=LogColor.YELLOW)
 
@@ -87,12 +91,11 @@ if __name__ == "__main__":
 
     # Define bar type
     barType = BarType.from_str(f"{equity.id}-1-MINUTE-LAST-EXTERNAL")
-    hs300BarType = BarType.from_str("000300.SH.SZSE-1-MINUTE-LAST-EXTERNAL")
-
+    hs300BarType = BarType.from_str(f"{hs300_index_instrument_id}-1-MINUTE-LAST-EXTERNAL")
 
     # - Get specific bars with date range filter
     filtered_bars = data_catalog.bars(
-        bar_types=[str(barType)],
+        bar_types=[str(barType), str(hs300BarType)],
         # start="2024-01-10",  # Filter start date
         # end="2024-01-15",  # Filter end date
     )
@@ -111,7 +114,6 @@ if __name__ == "__main__":
     #     if key not in bars_grouped:
     #         bars_grouped[key] = []
     #     bars_grouped[key].append(bar)
-
 
     instrument_id = equity.id
     bar_type_str = barType
@@ -134,12 +136,13 @@ if __name__ == "__main__":
 
     # Add instrument and market data to the engine
     engine.add_instrument(equity)
+    engine.add_instrument(queryHS300Results[0])
     engine.add_data(filtered_bars)
 
     # ----------------------------------------------------------------------------------
     # 5. Configure and run strategy
     # ----------------------------------------------------------------------------------
-    
+
     # Create strategies for each instrument and bar type combination
     strategies = []
     # for (instrument_id, bar_type_str), bars in bars_grouped.items():
@@ -155,7 +158,6 @@ if __name__ == "__main__":
     #     strategies.append(MACDStrategy(config=config))
     #     engine.add_strategy(strategies[-1])
     #     log.info(f"Added strategy for {instrument_id} {bar_type}", color=LogColor.GREEN)
-
 
     config = MACDStrategyConfig(
         instrument_id=instrument_id,
