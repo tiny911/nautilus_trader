@@ -49,9 +49,19 @@ def backtest():
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(
             log_level="INFO",  # Set to DEBUG to see detailed timer and bar processing logs
         )))
+    
+
+    # engine_config = BacktestEngineConfig(
+    #     trader_id=TraderId("BACKTEST_TRADER-001"),
+    #     logging=LoggingConfig(
+    #         log_level="DEBUG",  # Set to DEBUG to see detailed timer and bar processing logs
+    #     ),
+    # )
+
+    # engine = BacktestEngine(engine_config)
 
     # 创建交易场所
-    nasdaq = Venue("SZSE")
+    VENUE_NAME = "SZSE"
     # engine.add_venue(
     #     BacktestVenueConfig(
     #         name=nasdaq.value,
@@ -62,9 +72,19 @@ def backtest():
     #     )
     # )
 
+    # engine.add_venue(
+    #     venue=Venue(VENUE_NAME),
+    #     oms_type="HEDGING",  # Netting: positions are netted against each other
+    #     account_type=AccountType.MARGIN,  # Margin account: allows trading with leverage
+    #     starting_balances=[Money(1_000_000, USD)],  # Initial account balance of $1,000,000 USD
+    #     base_currency=USD,  # Account base currency is USD
+    #     default_leverage=Decimal(1),  # No leverage is used (1:1)
+    # )
+
+        # Set up the trading venue with a margin account
     engine.add_venue(
-        venue=Venue(nasdaq),
-        oms_type="HEDGING",  # Netting: positions are netted against each other
+        venue=Venue(VENUE_NAME),
+        oms_type=OmsType.NETTING,  # Netting: positions are netted against each other
         account_type=AccountType.MARGIN,  # Margin account: allows trading with leverage
         starting_balances=[Money(1_000_000, USD)],  # Initial account balance of $1,000,000 USD
         base_currency=USD,  # Account base currency is USD
@@ -127,6 +147,12 @@ def backtest():
     )
     log.info(f"Bars between Jan 10-15: {len(filtered_bars)}", color=LogColor.YELLOW)
 
+
+    # Add instrument and market data to the engine
+    engine.add_instrument(equity)
+    engine.add_instrument(queryHS300Results[0])
+    engine.add_data(filtered_bars)
+
     # 配置策略
     strategy_config = DualMACDConfig(
         instrument_aapl=equity.id,
@@ -160,7 +186,7 @@ def backtest():
 
 
 
-if __name__ == "__main__":
+def backtest1():
     # ----------------------------------------------------------------------------------
     # Step 1: Configure and Create the Backtest Engine
     # ----------------------------------------------------------------------------------
@@ -244,3 +270,7 @@ if __name__ == "__main__":
 
     # Clean up resources
     engine.dispose()
+
+
+if __name__ == "__main__":
+    backtest()
