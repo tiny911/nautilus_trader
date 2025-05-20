@@ -82,12 +82,12 @@ class MACDStrategy(Strategy):
         self.macd = MovingAverageConvergenceDivergence(
             fast_period=config.fast_period,
             slow_period=config.slow_period,
-            #signal_period=9,  # 添加标准信号线周期
-            price_type=PriceType.MID
+            # signal_period=9,  # 添加标准信号线周期
+            price_type=PriceType.MID,
         )
 
         self.signal = ExponentialMovingAverage(9)
-        
+
         self.instrument_id = config.instrument_id
         self.base_trade_size = Quantity.from_int(config.base_trade_size)
         self.volatility_window = config.volatility_window
@@ -123,7 +123,7 @@ class MACDStrategy(Strategy):
         if bar.bar_type == self.bar_type_hs300:
             self.ema50.update(bar.close)
             self.ema200.update(bar.close)
-            
+
             # 更新市场趋势判断
             if self.ema50.initialized and self.ema200.initialized:
                 if self.ema50.value > self.ema200.value:
@@ -141,8 +141,9 @@ class MACDStrategy(Strategy):
             return
 
         # 只在趋势有利时交易
-        if (self.market_trend == "上涨" and self.macd.value > 0) or \
-           (self.market_trend == "下跌" and self.macd.value < 0):
+        if (self.market_trend == "上涨" and self.macd.value > 0) or (
+            self.market_trend == "下跌" and self.macd.value < 0
+        ):
             self.check_for_entry()
             self.check_for_exit()
 
@@ -158,7 +159,10 @@ class MACDStrategy(Strategy):
 
         # 计算跟随步数
         current_value = abs(self.macd.value)
-        steps = min(int((current_value - self.enter_threshold) / self.config.follow_step), self.config.max_follow_steps)
+        steps = min(
+            int((current_value - self.enter_threshold) / self.config.follow_step),
+            self.config.max_follow_steps,
+        )
         steps = max(steps, 0)  # 确保不小于0
 
         # 动态调整风险系数
@@ -234,9 +238,6 @@ class MACDStrategy(Strategy):
         self.log.info(f"Total count of 1 day bars: {self.count_processed_bars} ")
 
 
-
-
-
 # region 自定义指标实现
 class MACD:
     """完整MACD指标实现(含MACD线、信号线、柱状图)"""
@@ -258,13 +259,17 @@ class MACD:
         if len(self.fast_ema) < self._fast_period:
             self.fast_ema = self.fast_ema.append(pd.Series(price)).tail(self._fast_period)
         else:
-            ema = price * (2/(self._fast_period+1)) + self.fast_ema.iloc[-1] * (1 - 2/(self._fast_period+1))
+            ema = price * (2 / (self._fast_period + 1)) + self.fast_ema.iloc[-1] * (
+                1 - 2 / (self._fast_period + 1)
+            )
             self.fast_ema = self.fast_ema.append(pd.Series(ema)).iloc[1:]
 
         if len(self.slow_ema) < self._slow_period:
             self.slow_ema = self.slow_ema.append(pd.Series(price)).tail(self._slow_period)
         else:
-            ema = price * (2/(self._slow_period+1)) + self.slow_ema.iloc[-1] * (1 - 2/(self._slow_period+1))
+            ema = price * (2 / (self._slow_period + 1)) + self.slow_ema.iloc[-1] * (
+                1 - 2 / (self._slow_period + 1)
+            )
             self.slow_ema = self.slow_ema.append(pd.Series(ema)).iloc[1:]
 
         # 计算MACD线
@@ -286,7 +291,10 @@ class MACD:
     @property
     def is_initialized(self):
         return self._initialized
+
+
 # endregion
+
 
 # region 策略配置
 class DualMACDConfig(StrategyConfig, frozen=True):
@@ -301,23 +309,18 @@ class DualMACDConfig(StrategyConfig, frozen=True):
     trade_size: int = 100
     enable_short: bool = False
 
+
 class DualMACDStrategy(Strategy):
     def __init__(self, config: DualMACDConfig):
         super().__init__(config)
 
         # 苹果股票指标
         self.aapl_macd = MACD(
-            fast=config.macd_fast,
-            slow=config.macd_slow,
-            signal=config.macd_signal
+            fast=config.macd_fast, slow=config.macd_slow, signal=config.macd_signal
         )
 
         # 纳斯达克指数指标
-        self.ndx_macd = MACD(
-            fast=config.ndx_fast,
-            slow=config.ndx_slow,
-            signal=config.ndx_signal
-        )
+        self.ndx_macd = MACD(fast=config.ndx_fast, slow=config.ndx_slow, signal=config.ndx_signal)
 
         self.trade_size = config.trade_size
         self.enable_short = config.enable_short
@@ -325,15 +328,22 @@ class DualMACDStrategy(Strategy):
         self.ndx = config.instrument_ndx
 
     def on_start(self):
-        self.subscribe_bars(self.aapl, BarAggregation.HOUR, 1)
-        self.subscribe_bars(self.ndx, BarAggregation.DAY, 1)
+        # self.subscribe_bars(self.aapl, BarAggregation.HOUR, 1)
+        # self.subscribe_bars(self.ndx, BarAggregation.DAY, 1)
+        # 订阅交易品种和沪深300指数数据
+
+        self.subscribe_bars(BarType.from_str(f"{self.aapl}-1-MINUTE-LAST-EXTERNAL"))
+        self.subscribe_bars(BarType.from_str(f"{self.ndx}-1-MINUTE-LAST-EXTERNAL"))
+        #         self.subscribe_bars(self.bar_type_1min)
+        # self.subscribe_bars(self.bar_type_hs300)
 
     def on_bar(self, bar: Bar):
+        print("###########################", bar.bar_type)
         # 更新对应品种的指标
-        if bar.instrument_id == self.aapl:
-            self.aapl_macd.update(bar.close.as_double())
-        elif bar.instrument_id == self.ndx:
-            self.ndx_macd.update(bar.close.as_double())
+        if bar.bar_type == BarType.from_str(f"{self.aapl}-1-MINUTE-LAST-EXTERNAL"):
+            self.aapl_macd.update(bar.close)
+        elif bar.bar_type == BarType.from_str(f"{self.ndx}-1-MINUTE-LAST-EXTERNAL"):
+            self.ndx_macd.update(bar.close)
 
         # 检查指标初始化状态
         if not (self.aapl_macd.is_initialized and self.ndx_macd.is_initialized):
@@ -344,18 +354,18 @@ class DualMACDStrategy(Strategy):
 
         # 市场趋势判断（纳斯达克）
         market_bullish = (
-            self.ndx_macd.macd_line.iloc[-1] > self.ndx_macd.signal_ema.iloc[-1] and
-            self.ndx_macd.histogram.iloc[-1] > 0
+            self.ndx_macd.macd_line.iloc[-1] > self.ndx_macd.signal_ema.iloc[-1]
+            and self.ndx_macd.histogram.iloc[-1] > 0
         )
 
         # 苹果交易信号
         aapl_buy = (
-            self.aapl_macd.macd_line.iloc[-1] > self.aapl_macd.signal_ema.iloc[-1] and
-            self.aapl_macd.histogram.iloc[-1] > 0
+            self.aapl_macd.macd_line.iloc[-1] > self.aapl_macd.signal_ema.iloc[-1]
+            and self.aapl_macd.histogram.iloc[-1] > 0
         )
         aapl_sell = (
-            self.aapl_macd.macd_line.iloc[-1] < self.aapl_macd.signal_ema.iloc[-1] and
-            self.aapl_macd.histogram.iloc[-1] < 0
+            self.aapl_macd.macd_line.iloc[-1] < self.aapl_macd.signal_ema.iloc[-1]
+            and self.aapl_macd.histogram.iloc[-1] < 0
         )
 
         # 执行交易逻辑
@@ -365,7 +375,7 @@ class DualMACDStrategy(Strategy):
                     self.order_factory.market(
                         instrument_id=self.aapl,
                         order_side=OrderSide.BUY,
-                        quantity=Quantity.from_int(self.trade_size)
+                        quantity=Quantity.from_int(self.trade_size),
                     )
                 )
             elif aapl_sell and position and position.is_long:
@@ -373,4 +383,6 @@ class DualMACDStrategy(Strategy):
         else:
             if position:
                 self.close_position(position)
+
+
 # endregion
