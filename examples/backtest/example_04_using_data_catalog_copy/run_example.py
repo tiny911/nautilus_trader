@@ -65,6 +65,7 @@ if __name__ == "__main__":
     # - Retrieve all instrument definitions
     all_instruments = data_catalog.instruments()
 
+    log.info(f"All instruments:\n{all_instruments}", color=LogColor.YELLOW)
     log.info(f"All instruments:\n{all_instruments[1]}", color=LogColor.YELLOW)
 
     equity = all_instruments[1]
