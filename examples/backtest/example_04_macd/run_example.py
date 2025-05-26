@@ -82,7 +82,7 @@ def backtest():
     filtered_bars = data_catalog.bars(
         bar_types=[str(barType), str(hs300BarType)],
         start="2018-01-10",  # Filter start date
-        end="2019-01-15",  # Filter end date
+        end="2018-07-15",  # Filter end date
     )
     # filtered_bars = data_catalog.bars(
     #     bar_types=[str(barType)],
