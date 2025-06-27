@@ -1809,6 +1809,8 @@ class TestTimeBarAggregator:
             ts_init=1 * 60 * NANOSECONDS_IN_SECOND,
         )
 
+        initial_next_close = aggregator.next_close_ns
+
         # Act
         aggregator.handle_quote_tick(tick1)
         aggregator.handle_quote_tick(tick2)
@@ -1825,6 +1827,8 @@ class TestTimeBarAggregator:
         assert Price.from_str("1.000015") == bar.close
         assert Quantity.from_int(3) == bar.volume
         assert bar.ts_init == 60_000_000_000
+        assert initial_next_close == 60_000_000_000
+        assert aggregator.next_close_ns == 120_000_000_000
 
     def test_batch_update_sends_single_bar_to_handler(self):
         # Arrange
@@ -1909,6 +1913,7 @@ class TestTimeBarAggregator:
             handler.append,
             clock,
         )
+        initial_next_close = aggregator.next_close_ns
         composite_bar_type = bar_type.composite()
 
         bar1 = Bar(
@@ -1961,6 +1966,8 @@ class TestTimeBarAggregator:
         assert bar.close == Price.from_str("1.00008")
         assert bar.volume == Quantity.from_int(3)
         assert bar.ts_init == 3 * 60 * NANOSECONDS_IN_SECOND
+        assert initial_next_close == 180_000_000_000
+        assert aggregator.next_close_ns == 360_000_000_000
 
     def test_update_timer_with_test_clock_sends_no_bar_to_handler_with_skip_first_non_full_bar(
         self,
@@ -1989,6 +1996,7 @@ class TestTimeBarAggregator:
             skip_first_non_full_bar=True,
         )
         composite_bar_type = bar_type.composite()
+        initial_next_close = aggregator.next_close_ns
 
         bar1 = Bar(
             bar_type=composite_bar_type,
@@ -2031,13 +2039,15 @@ class TestTimeBarAggregator:
 
         # Assert
         assert len(events) == 0
+        assert initial_next_close == 180_000_000_001
+        assert aggregator.next_close_ns == 180_000_000_001  # TODO: This didn't increment?
 
     def test_update_timer_with_test_clock_sends_single_bar_to_handler_with_bars_and_time_origin(
         self,
     ):
         # Arrange
         clock = TestClock()
-        clock.set_time(30 * 60 * NANOSECONDS_IN_SECOND)
+        clock.set_time((30 * 60 + 30) * NANOSECONDS_IN_SECOND + 10_000)
         handler = []
         instrument_id = TestIdStubs.audusd_id()
         bar_spec3 = BarSpecification(3, BarAggregation.MINUTE, PriceType.LAST)
@@ -2055,7 +2065,8 @@ class TestTimeBarAggregator:
             bar_type,
             handler.append,
             clock,
-            time_bars_origin=pd.Timedelta(seconds=30),
+            time_bars_origin_offset=pd.Timedelta(seconds=30),
+            bar_build_delay=10,
         )
         composite_bar_type = bar_type.composite()
 
@@ -2092,11 +2103,13 @@ class TestTimeBarAggregator:
             ts_init=33 * 60 * NANOSECONDS_IN_SECOND,
         )
 
+        initial_next_close = aggregator.next_close_ns
+
         # Act
         aggregator.handle_bar(bar1)
         aggregator.handle_bar(bar2)
         aggregator.handle_bar(bar3)
-        events = clock.advance_time(bar3.ts_event)
+        events = clock.advance_time((33 * 60 + 30) * NANOSECONDS_IN_SECOND + 10_000)
         events[0].handle()
 
         # Assert
@@ -2108,7 +2121,9 @@ class TestTimeBarAggregator:
         assert bar.low == Price.from_str("1.00003")
         assert bar.close == Price.from_str("1.00008")
         assert bar.volume == Quantity.from_int(3)
-        assert bar.ts_init == 33 * 60 * NANOSECONDS_IN_SECOND
+        assert bar.ts_init == pd.Timestamp("1970-01-01 00:33:30.000010").value
+        assert initial_next_close == pd.Timestamp("1970-01-01 00:33:30.000010").value
+        assert aggregator.next_close_ns == pd.Timestamp("1970-01-01 00:36:30.000010").value
 
     def test_update_timer_with_test_clock_sends_single_monthly_bar_to_handler_with_bars(self):
         # Arrange

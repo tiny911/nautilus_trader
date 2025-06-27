@@ -19,6 +19,7 @@ import hashlib
 import importlib
 from collections.abc import Callable
 from decimal import Decimal
+from io import StringIO
 from typing import Annotated, Any
 
 import msgspec
@@ -57,7 +58,7 @@ CUSTOM_ENCODINGS: dict[type, Callable] = {
 
 
 CUSTOM_DECODINGS: dict[type, Callable] = {
-    pd.DataFrame: lambda x: pd.read_json(x),
+    pd.DataFrame: lambda x: pd.read_json(StringIO(x)),
 }
 
 
@@ -555,7 +556,7 @@ class LoggingConfig(NautilusConfig, frozen=True):
     print_config : bool, default False
         If the core logging configuration should be printed to stdout at initialization.
     use_pyo3: bool, default False
-        If the logging system should be initialized via pyo3,
+        If the logging subsystem should be initialized via pyo3,
         this isn't recommended for backtesting as the performance is much lower
         but can be useful for seeing logs originating from Rust.
     clear_log_file : bool, default False

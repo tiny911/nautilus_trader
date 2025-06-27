@@ -45,7 +45,6 @@ use nautilus_model::{
     types::{Currency, Money, Price},
 };
 use rust_decimal::{Decimal, prelude::FromPrimitive};
-use ustr::Ustr;
 
 use crate::{config::PortfolioConfig, manager::AccountsManager};
 
@@ -182,15 +181,22 @@ impl Portfolio {
             )))
         };
 
-        msgbus::register("Portfolio.update_account", update_account_handler.clone());
+        msgbus::register(
+            "Portfolio.update_account".into(),
+            update_account_handler.clone(),
+        );
 
-        msgbus::subscribe("data.quotes.*", update_quote_handler, Some(10));
+        msgbus::subscribe("data.quotes.*".into(), update_quote_handler, Some(10));
         if bar_updates {
-            msgbus::subscribe("data.quotes.*EXTERNAL", update_bar_handler, Some(10));
+            msgbus::subscribe("data.quotes.*EXTERNAL".into(), update_bar_handler, Some(10));
         }
-        msgbus::subscribe("events.order.*", update_order_handler, Some(10));
-        msgbus::subscribe("events.position.*", update_position_handler, Some(10));
-        msgbus::subscribe("events.account.*", update_account_handler, Some(10));
+        msgbus::subscribe("events.order.*".into(), update_order_handler, Some(10));
+        msgbus::subscribe(
+            "events.position.*".into(),
+            update_position_handler,
+            Some(10),
+        );
+        msgbus::subscribe("events.account.*".into(), update_account_handler, Some(10));
     }
 
     pub fn reset(&mut self) {
@@ -201,11 +207,15 @@ impl Portfolio {
 
     // -- QUERIES ---------------------------------------------------------------------------------
 
+    /// Returns `true` if the portfolio has been initialized.
     #[must_use]
     pub fn is_initialized(&self) -> bool {
         self.inner.borrow().initialized
     }
 
+    /// Returns the locked balances for the given venue.
+    ///
+    /// Locked balances represent funds reserved for open orders.
     #[must_use]
     pub fn balances_locked(&self, venue: &Venue) -> HashMap<Currency, Money> {
         self.cache.borrow().account_for_venue(venue).map_or_else(
@@ -217,6 +227,9 @@ impl Portfolio {
         )
     }
 
+    /// Returns the initial margin requirements for the given venue.
+    ///
+    /// Only applicable for margin accounts. Returns empty map for cash accounts.
     #[must_use]
     pub fn margins_init(&self, venue: &Venue) -> HashMap<InstrumentId, Money> {
         self.cache.borrow().account_for_venue(venue).map_or_else(
@@ -236,6 +249,9 @@ impl Portfolio {
         )
     }
 
+    /// Returns the maintenance margin requirements for the given venue.
+    ///
+    /// Only applicable for margin accounts. Returns empty map for cash accounts.
     #[must_use]
     pub fn margins_maint(&self, venue: &Venue) -> HashMap<InstrumentId, Money> {
         self.cache.borrow().account_for_venue(venue).map_or_else(
@@ -255,6 +271,9 @@ impl Portfolio {
         )
     }
 
+    /// Returns the unrealized PnLs for all positions at the given venue.
+    ///
+    /// Calculates mark-to-market PnL based on current market prices.
     #[must_use]
     pub fn unrealized_pnls(&mut self, venue: &Venue) -> HashMap<Currency, Money> {
         let instrument_ids = {
@@ -293,6 +312,9 @@ impl Portfolio {
             .collect()
     }
 
+    /// Returns the realized PnLs for all positions at the given venue.
+    ///
+    /// Calculates total realized profit and loss from closed positions.
     #[must_use]
     pub fn realized_pnls(&mut self, venue: &Venue) -> HashMap<Currency, Money> {
         let instrument_ids = {
@@ -750,6 +772,9 @@ impl Portfolio {
         );
     }
 
+    /// Updates portfolio calculations based on a new quote tick.
+    ///
+    /// Recalculates unrealized PnL for positions affected by the quote update.
     pub fn update_quote_tick(&mut self, quote: &QuoteTick) {
         update_quote_tick(
             self.cache.clone(),
@@ -759,6 +784,9 @@ impl Portfolio {
         );
     }
 
+    /// Updates portfolio calculations based on a new bar.
+    ///
+    /// Updates cached bar close prices and recalculates unrealized PnL.
     pub fn update_bar(&mut self, bar: &Bar) {
         update_bar(
             self.cache.clone(),
@@ -768,10 +796,14 @@ impl Portfolio {
         );
     }
 
+    /// Updates portfolio with a new account state event.
     pub fn update_account(&mut self, event: &AccountState) {
         update_account(self.cache.clone(), event);
     }
 
+    /// Updates portfolio calculations based on an order event.
+    ///
+    /// Handles balance updates for order fills and margin calculations for order changes.
     pub fn update_order(&mut self, event: &OrderEventAny) {
         update_order(
             self.cache.clone(),
@@ -781,6 +813,9 @@ impl Portfolio {
         );
     }
 
+    /// Updates portfolio calculations based on a position event.
+    ///
+    /// Recalculates net positions, unrealized PnL, and margin requirements.
     pub fn update_position(&mut self, event: &PositionEvent) {
         update_position(
             self.cache.clone(),
@@ -1251,7 +1286,7 @@ fn update_order(
 
     if let Some(account_state) = account_state {
         msgbus::publish(
-            &Ustr::from(&format!("events.account.{}", account.id())),
+            format!("events.account.{}", account.id()).into(),
             &account_state,
         );
     } else {

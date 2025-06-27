@@ -73,6 +73,7 @@ cdef class Clock:
         datetime stop_time=*,
         callback: Callable[[TimeEvent], None]=*,
         bint allow_past=*,
+        bint fire_immediately=*,
     )
     cpdef void set_timer_ns(
         self,
@@ -82,6 +83,7 @@ cdef class Clock:
         uint64_t stop_time_ns,
         callback: Callable[[TimeEvent], None]=*,
         bint allow_past=*,
+        bint fire_immediately=*,
     )
     cpdef void cancel_timer(self, str name)
     cpdef void cancel_timers(self)
@@ -311,9 +313,6 @@ cdef class MessageBus:
     cpdef void publish(self, str topic, msg, bint external_pub=*)
     cdef void publish_c(self, str topic, msg, bint external_pub=*)
     cdef Subscription[:] _resolve_subscriptions(self, str topic)
-
-
-cdef bint is_matching(str topic, str pattern)
 
 
 cdef class Subscription:

@@ -31,7 +31,8 @@ use chrono::TimeDelta;
 use nautilus_common::{
     cache::Cache,
     clock::Clock,
-    msgbus::{self},
+    messages::execution::{BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder},
+    msgbus,
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
@@ -60,7 +61,6 @@ use ustr::Ustr;
 use crate::{
     matching_core::OrderMatchingCore,
     matching_engine::{config::OrderMatchingEngineConfig, ids_generator::IdsGenerator},
-    messages::{BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder},
     models::{
         fee::{FeeModel, FeeModelAny},
         fill::FillModel,
@@ -114,6 +114,7 @@ impl Debug for OrderMatchingEngine {
 }
 
 impl OrderMatchingEngine {
+    /// Creates a new [`OrderMatchingEngine`] instance.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         instrument: InstrumentAny,
@@ -172,6 +173,11 @@ impl OrderMatchingEngine {
         }
     }
 
+    /// Resets the matching engine to its initial state.
+    ///
+    /// Clears the order book, execution state, cached data, and resets all
+    /// internal components. This is typically used for backtesting scenarios
+    /// where the engine needs to be reset between test runs.
     pub fn reset(&mut self) {
         self.book.clear(0, UnixNanos::default());
         self.execution_bar_types.clear();
@@ -187,36 +193,43 @@ impl OrderMatchingEngine {
         log::info!("Reset {}", self.instrument.id());
     }
 
+    /// Sets the fill model for the matching engine.
     pub const fn set_fill_model(&mut self, fill_model: FillModel) {
         self.fill_model = fill_model;
     }
 
     #[must_use]
+    /// Returns the best bid price from the order book.
     pub fn best_bid_price(&self) -> Option<Price> {
         self.book.best_bid_price()
     }
 
     #[must_use]
+    /// Returns the best ask price from the order book.
     pub fn best_ask_price(&self) -> Option<Price> {
         self.book.best_ask_price()
     }
 
     #[must_use]
+    /// Returns a reference to the internal order book.
     pub const fn get_book(&self) -> &OrderBook {
         &self.book
     }
 
     #[must_use]
+    /// Returns all open bid orders managed by the matching core.
     pub const fn get_open_bid_orders(&self) -> &[PassiveOrderAny] {
         self.core.get_orders_bid()
     }
 
     #[must_use]
+    /// Returns all open ask orders managed by the matching core.
     pub const fn get_open_ask_orders(&self) -> &[PassiveOrderAny] {
         self.core.get_orders_ask()
     }
 
     #[must_use]
+    /// Returns all open orders from both bid and ask sides.
     pub fn get_open_orders(&self) -> Vec<PassiveOrderAny> {
         // Get orders from both open bid orders and open ask orders
         let mut orders = Vec::new();
@@ -226,6 +239,7 @@ impl OrderMatchingEngine {
     }
 
     #[must_use]
+    /// Returns true if an order with the given client order ID exists in the matching engine.
     pub fn order_exists(&self, client_order_id: ClientOrderId) -> bool {
         self.core.order_exists(client_order_id)
     }
@@ -517,33 +531,33 @@ impl OrderMatchingEngine {
 
             // Check for instrument expiration or activation
             if EXPIRING_INSTRUMENT_TYPES.contains(&self.instrument.instrument_class()) {
-                if let Some(activation_ns) = self.instrument.activation_ns() {
-                    if self.clock.borrow().timestamp_ns() < activation_ns {
-                        self.generate_order_rejected(
-                            order,
-                            format!(
-                                "Contract {} is not yet active, activation {}",
-                                self.instrument.id(),
-                                self.instrument.activation_ns().unwrap()
-                            )
-                            .into(),
-                        );
-                        return;
-                    }
+                if let Some(activation_ns) = self.instrument.activation_ns()
+                    && self.clock.borrow().timestamp_ns() < activation_ns
+                {
+                    self.generate_order_rejected(
+                        order,
+                        format!(
+                            "Contract {} is not yet active, activation {}",
+                            self.instrument.id(),
+                            self.instrument.activation_ns().unwrap()
+                        )
+                        .into(),
+                    );
+                    return;
                 }
-                if let Some(expiration_ns) = self.instrument.expiration_ns() {
-                    if self.clock.borrow().timestamp_ns() >= expiration_ns {
-                        self.generate_order_rejected(
-                            order,
-                            format!(
-                                "Contract {} has expired, expiration {}",
-                                self.instrument.id(),
-                                self.instrument.expiration_ns().unwrap()
-                            )
-                            .into(),
-                        );
-                        return;
-                    }
+                if let Some(expiration_ns) = self.instrument.expiration_ns()
+                    && self.clock.borrow().timestamp_ns() >= expiration_ns
+                {
+                    self.generate_order_rejected(
+                        order,
+                        format!(
+                            "Contract {} has expired, expiration {}",
+                            self.instrument.id(),
+                            self.instrument.expiration_ns().unwrap()
+                        )
+                        .into(),
+                    );
+                    return;
                 }
             }
 
@@ -618,9 +632,10 @@ impl OrderMatchingEngine {
             }
 
             // Check for valid order price precision
-            if let Some(price) = order.price() {
-                if price.precision != self.instrument.price_precision() {
-                    self.generate_order_rejected(
+            if let Some(price) = order.price()
+                && price.precision != self.instrument.price_precision()
+            {
+                self.generate_order_rejected(
                         order,
                         format!(
                             "Invalid order price precision for order {}, was {} when {} price precision is {}",
@@ -631,14 +646,14 @@ impl OrderMatchingEngine {
                         )
                             .into(),
                     );
-                    return;
-                }
+                return;
             }
 
             // Check for valid order trigger price precision
-            if let Some(trigger_price) = order.trigger_price() {
-                if trigger_price.precision != self.instrument.price_precision() {
-                    self.generate_order_rejected(
+            if let Some(trigger_price) = order.trigger_price()
+                && trigger_price.precision != self.instrument.price_precision()
+            {
+                self.generate_order_rejected(
                         order,
                         format!(
                             "Invalid order trigger price precision for order {}, was {} when {} price precision is {}",
@@ -649,8 +664,7 @@ impl OrderMatchingEngine {
                         )
                             .into(),
                     );
-                    return;
-                }
+                return;
             }
 
             // Get position if exists
@@ -1035,12 +1049,12 @@ impl OrderMatchingEngine {
     }
 
     fn process_trailing_stop_order(&mut self, order: &mut OrderAny) {
-        if let Some(trigger_price) = order.trigger_price() {
-            if self
+        if let Some(trigger_price) = order.trigger_price()
+            && self
                 .core
                 .is_stop_matched(order.order_side_specified(), trigger_price)
-            {
-                self.generate_order_rejected(
+        {
+            self.generate_order_rejected(
                     order,
                     format!(
                         "{} {} order trigger px of {} was in the market: bid={}, ask={}, but rejected because of configuration",
@@ -1055,8 +1069,7 @@ impl OrderMatchingEngine {
                             .map_or_else(|| "None".to_string(), |p| p.to_string())
                     ).into(),
                 );
-                return;
-            }
+            return;
         }
 
         // Order is valid and accepted
@@ -1100,26 +1113,24 @@ impl OrderMatchingEngine {
             }
 
             // Check expiration
-            if self.config.support_gtd_orders {
-                if let Some(expire_time) = order.expire_time() {
-                    if timestamp_ns >= expire_time {
-                        // SAFTEY: We know this order is in the core
-                        self.core.delete_order(order).unwrap();
-                        self.cached_filled_qty.remove(&order.client_order_id());
-                        self.expire_order(order);
-                    }
-                }
+            if self.config.support_gtd_orders
+                && let Some(expire_time) = order.expire_time()
+                && timestamp_ns >= expire_time
+            {
+                // SAFTEY: We know this order is in the core
+                self.core.delete_order(order).unwrap();
+                self.cached_filled_qty.remove(&order.client_order_id());
+                self.expire_order(order);
             }
 
             // Manage trailing stop
-            if let PassiveOrderAny::Stop(o) = order {
-                if let PassiveOrderAny::Stop(
+            if let PassiveOrderAny::Stop(o) = order
+                && let PassiveOrderAny::Stop(
                     StopOrderAny::TrailingStopMarket(_) | StopOrderAny::TrailingStopLimit(_),
                 ) = order
-                {
-                    let mut order = OrderAny::from(o.to_owned());
-                    self.update_trailing_stop_order(&mut order);
-                }
+            {
+                let mut order = OrderAny::from(o.to_owned());
+                self.update_trailing_stop_order(&mut order);
             }
 
             // Move market back to targets
@@ -1260,17 +1271,17 @@ impl OrderMatchingEngine {
     }
 
     pub fn fill_market_order(&mut self, order: &mut OrderAny) {
-        if let Some(filled_qty) = self.cached_filled_qty.get(&order.client_order_id()) {
-            if filled_qty >= &order.quantity() {
-                log::info!(
-                    "Ignoring fill as already filled pending application of events: {:?}, {:?}, {:?}, {:?}",
-                    filled_qty,
-                    order.quantity(),
-                    order.filled_qty(),
-                    order.quantity()
-                );
-                return;
-            }
+        if let Some(filled_qty) = self.cached_filled_qty.get(&order.client_order_id())
+            && filled_qty >= &order.quantity()
+        {
+            log::info!(
+                "Ignoring fill as already filled pending application of events: {:?}, {:?}, {:?}, {:?}",
+                filled_qty,
+                order.quantity(),
+                order.filled_qty(),
+                order.quantity()
+            );
+            return;
         }
 
         let venue_position_id = self.ids_generator.get_position_id(order, Some(true));
@@ -1439,21 +1450,21 @@ impl OrderMatchingEngine {
             }
 
             // Check reduce only order
-            if self.config.use_reduce_only && order.is_reduce_only() {
-                if let Some(position) = &position {
-                    if *fill_qty > position.quantity {
-                        if position.quantity == Quantity::zero(position.quantity.precision) {
-                            // Done
-                            return;
-                        }
-
-                        // Adjust fill to honor reduce only execution (fill remaining position size only)
-                        let adjusted_fill_qty =
-                            Quantity::from_raw(position.quantity.raw, fill_qty.precision);
-
-                        self.generate_order_updated(order, adjusted_fill_qty, None, None);
-                    }
+            if self.config.use_reduce_only
+                && order.is_reduce_only()
+                && let Some(position) = &position
+                && *fill_qty > position.quantity
+            {
+                if position.quantity == Quantity::zero(position.quantity.precision) {
+                    // Done
+                    return;
                 }
+
+                // Adjust fill to honor reduce only execution (fill remaining position size only)
+                let adjusted_fill_qty =
+                    Quantity::from_raw(position.quantity.raw, fill_qty.precision);
+
+                self.generate_order_updated(order, adjusted_fill_qty, None, None);
             }
 
             if fill_qty.is_zero() {
@@ -2152,7 +2163,7 @@ impl OrderMatchingEngine {
             ts_now,
             false,
         ));
-        msgbus::send(&Ustr::from("ExecEngine.process"), &event as &dyn Any);
+        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
     }
 
     fn generate_order_accepted(&self, order: &mut OrderAny, venue_order_id: VenueOrderId) {
@@ -2172,7 +2183,7 @@ impl OrderMatchingEngine {
             ts_now,
             false,
         ));
-        msgbus::send(&Ustr::from("ExecEngine.process"), &event as &dyn Any);
+        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
 
         // TODO remove this when execution engine msgbus handlers are correctly set
         order.apply(event).expect("Failed to apply order event");
@@ -2203,7 +2214,7 @@ impl OrderMatchingEngine {
             venue_order_id,
             account_id,
         ));
-        msgbus::send(&Ustr::from("ExecEngine.process"), &event as &dyn Any);
+        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2231,7 +2242,7 @@ impl OrderMatchingEngine {
             Some(venue_order_id),
             Some(account_id),
         ));
-        msgbus::send(&Ustr::from("ExecEngine.process"), &event as &dyn Any);
+        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
     }
 
     fn generate_order_updated(
@@ -2257,7 +2268,7 @@ impl OrderMatchingEngine {
             price,
             trigger_price,
         ));
-        msgbus::send(&Ustr::from("ExecEngine.process"), &event as &dyn Any);
+        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
 
         // TODO remove this when execution engine msgbus handlers are correctly set
         order.apply(event).expect("Failed to apply order event");
@@ -2277,7 +2288,7 @@ impl OrderMatchingEngine {
             Some(venue_order_id),
             order.account_id(),
         ));
-        msgbus::send(&Ustr::from("ExecEngine.process"), &event as &dyn Any);
+        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
     }
 
     fn generate_order_triggered(&self, order: &OrderAny) {
@@ -2294,7 +2305,7 @@ impl OrderMatchingEngine {
             order.venue_order_id(),
             order.account_id(),
         ));
-        msgbus::send(&Ustr::from("ExecEngine.process"), &event as &dyn Any);
+        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
     }
 
     fn generate_order_expired(&self, order: &OrderAny) {
@@ -2311,7 +2322,7 @@ impl OrderMatchingEngine {
             order.venue_order_id(),
             order.account_id(),
         ));
-        msgbus::send(&Ustr::from("ExecEngine.process"), &event as &dyn Any);
+        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2351,7 +2362,7 @@ impl OrderMatchingEngine {
             venue_position_id,
             Some(commission),
         ));
-        msgbus::send(&Ustr::from("ExecEngine.process"), &event as &dyn Any);
+        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
 
         // TODO remove this when execution engine msgbus handlers are correctly set
         order.apply(event).expect("Failed to apply order event");

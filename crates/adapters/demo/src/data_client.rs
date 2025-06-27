@@ -18,7 +18,8 @@ use std::{net::SocketAddr, pin::Pin, sync::Arc};
 use futures::{Stream, StreamExt};
 use nautilus_common::{
     messages::data::{
-        CustomDataResponse, DataResponse, RequestData, SubscribeData, UnsubscribeData,
+        CustomDataResponse, DataResponse, RequestCustomData, SubscribeCustomData,
+        UnsubscribeCustomData,
     },
     runtime,
 };
@@ -104,7 +105,7 @@ impl MockDataClient {
         )
     }
 
-    fn get_request(&self, req: &RequestData) {
+    fn get_request(&self, req: &RequestCustomData) {
         let req = req.clone();
         let http_client = self.http_client.clone();
         let http_tx = self.http_tx.clone();
@@ -141,7 +142,7 @@ impl MockDataClient {
         });
     }
 
-    fn skip_request(&self, req: &RequestData) {
+    fn skip_request(&self, req: &RequestCustomData) {
         let req = req.clone();
         let http_client = self.http_client.clone();
         let http_tx = self.http_tx.clone();
@@ -179,12 +180,13 @@ impl MockDataClient {
     }
 }
 
+#[async_trait::async_trait]
 impl DataClient for MockDataClient {
     fn client_id(&self) -> nautilus_model::identifiers::ClientId {
         ClientId::new("mock_data_client")
     }
 
-    fn request_data(&self, request: &RequestData) -> anyhow::Result<()> {
+    fn request_data(&self, request: &RequestCustomData) -> anyhow::Result<()> {
         if request.data_type.type_name() == "get" {
             println!("Received get data request");
             self.get_request(request);
@@ -196,7 +198,7 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
-    fn subscribe(&mut self, _cmd: &SubscribeData) -> anyhow::Result<()> {
+    fn subscribe(&mut self, _cmd: &SubscribeCustomData) -> anyhow::Result<()> {
         println!("Received subscribe command");
         let websocket_client = self.websocket_client.clone();
         runtime::get_runtime().spawn(async move {
@@ -207,7 +209,7 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
-    fn unsubscribe(&mut self, _cmd: &UnsubscribeData) -> anyhow::Result<()> {
+    fn unsubscribe(&mut self, _cmd: &UnsubscribeCustomData) -> anyhow::Result<()> {
         println!("Received unsubscribe command");
         let websocket_client = self.websocket_client.clone();
         runtime::get_runtime().spawn(async move {
@@ -238,11 +240,11 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
-    fn connect(&self) -> anyhow::Result<()> {
+    async fn connect(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn disconnect(&self) -> anyhow::Result<()> {
+    async fn disconnect(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 

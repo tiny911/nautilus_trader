@@ -16,10 +16,10 @@
 
 from typing import Any
 
-from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
-from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_instrument_id
-from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfig
-from nautilus_trader.adapters.polymarket.factories import PolymarketLiveDataClientFactory
+from nautilus_trader.adapters.polymarket import POLYMARKET
+from nautilus_trader.adapters.polymarket import PolymarketDataClientConfig
+from nautilus_trader.adapters.polymarket import PolymarketLiveDataClientFactory
+from nautilus_trader.adapters.polymarket import get_polymarket_instrument_id
 from nautilus_trader.cache.config import CacheConfig
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.config import InstrumentProviderConfig
@@ -38,16 +38,13 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.trading.strategy import Strategy
 
 
-# *** THIS INTEGRATION IS STILL UNDER CONSTRUCTION. ***
-# *** CONSIDER IT TO BE IN AN UNSTABLE BETA PHASE AND EXERCISE CAUTION. ***
-
 # For correct subscription operation, you must specify all instruments to be immediately
 # subscribed for as part of the data client configuration
 
-# Bundesliga Winner: will-bayern-munich-win-the-bundesliga
-# https://polymarket.com/event/bundesliga-winner/will-bayern-munich-win-the-bundesliga?tid=1737609778712
-condition_id = "0x40ee70f4ac20bac0565f5a0455e5a06d54856f0dcc7960a1b9033d9939ee5966"
-token_id = "91187039365329005211165725984783762943673232863186175327958364347484511288345"
+# will-the-indiana-pacers-win-the-2025-nba-finals
+# https://polymarket.com/event/will-the-new-york-knicks-win-the-2025-nba-finals
+condition_id = "0xf2a89afeddff5315e37211b0b0e4e93ed167fba2694cd35c252672d0aca73711"
+token_id = "5044658213116494392261893544497225363846217319105609804585534197935770239191"
 
 instrument_ids = [
     get_polymarket_instrument_id(condition_id, token_id),

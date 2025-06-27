@@ -22,13 +22,16 @@ use nautilus_model::defi::{
 
 use crate::exchanges::extended::DexExtended;
 
-/// Camelot V3 DEX on Arbitrum
+/// Camelot V3 DEX on Arbitrum.
 pub static CAMELOT_V3: LazyLock<DexExtended> = LazyLock::new(|| {
     let dex = Dex::new(
         chains::ARBITRUM.clone(),
         "Camelot V3",
         "0x1a3c9b1d2f0529d97f2afc5136cc23e58f1fd35b",
         AmmType::CLAMM,
+        "",
+        "",
+        "",
         "",
     );
     DexExtended::new(dex)

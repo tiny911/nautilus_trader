@@ -41,7 +41,7 @@ pub struct AdaptiveMovingAverage {
     pub period_efficiency_ratio: usize,
     /// The period for the fast smoothing constant (> 0).
     pub period_fast: usize,
-    /// The period for the slow smoothing constant (> period_fast).
+    /// The period for the slow smoothing constant (> `period_fast`).
     pub period_slow: usize,
     /// The price type used for calculations.
     pub price_type: PriceType,
@@ -109,10 +109,10 @@ impl AdaptiveMovingAverage {
     /// # Panics
     ///
     /// This function panics if:
-    /// - `period_efficiency_ratio` == 0
-    /// - `period_fast` == 0
-    /// - `period_slow` == 0
-    /// - `period_slow` ≤ `period_fast`
+    /// - `period_efficiency_ratio` == 0.
+    /// - `period_fast` == 0.
+    /// - `period_slow` == 0.
+    /// - `period_slow` ≤ `period_fast`.
     #[must_use]
     pub fn new(
         period_efficiency_ratio: usize,

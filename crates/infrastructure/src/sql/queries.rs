@@ -430,7 +430,7 @@ impl DatabaseQueries {
             .bind(snapshot.liquidity_side.map(|x| x.to_string()))
             .bind(snapshot.avg_px)
             .bind(snapshot.slippage)
-            .bind(snapshot.commissions.iter().map(std::string::ToString::to_string).collect::<Vec<String>>())
+            .bind(snapshot.commissions.iter().map(ToString::to_string).collect::<Vec<String>>())
             .bind(snapshot.status.to_string())
             .bind(snapshot.is_post_only)
             .bind(snapshot.is_reduce_only)
@@ -440,12 +440,12 @@ impl DatabaseQueries {
             .bind(snapshot.trigger_instrument_id.map(|x| x.to_string()))
             .bind(snapshot.contingency_type.map(|x| x.to_string()))
             .bind(snapshot.order_list_id.map(|x| x.to_string()))
-            .bind(snapshot.linked_order_ids.map(|x| x.iter().map(std::string::ToString::to_string).collect::<Vec<String>>()))
+            .bind(snapshot.linked_order_ids.map(|x| x.iter().map(ToString::to_string).collect::<Vec<String>>()))
             .bind(snapshot.parent_order_id.map(|x| x.to_string()))
             .bind(snapshot.exec_algorithm_id.map(|x| x.to_string()))
             .bind(snapshot.exec_algorithm_params.map(|x| serde_json::to_value(x).unwrap()))
             .bind(snapshot.exec_spawn_id.map(|x| x.to_string()))
-            .bind(snapshot.tags.map(|x| x.iter().map(std::string::ToString::to_string).collect::<Vec<String>>()))
+            .bind(snapshot.tags.map(|x| x.iter().map(ToString::to_string).collect::<Vec<String>>()))
             .bind(snapshot.init_id.to_string())
             .bind(snapshot.ts_init.to_string())
             .bind(snapshot.ts_last.to_string())
@@ -539,7 +539,7 @@ impl DatabaseQueries {
             .bind(snapshot.realized_return)
             .bind(snapshot.realized_pnl.map(|x| x.to_string()))
             .bind(snapshot.unrealized_pnl.map(|x| x.to_string()))
-            .bind(snapshot.commissions.iter().map(std::string::ToString::to_string).collect::<Vec<String>>())
+            .bind(snapshot.commissions.iter().map(ToString::to_string).collect::<Vec<String>>())
             .bind(snapshot.duration_ns.map(|x| x.to_string()))
             .bind(snapshot.ts_opened.to_string())
             .bind(snapshot.ts_closed.map(|x| x.to_string()))
@@ -654,24 +654,24 @@ impl DatabaseQueries {
 
         sqlx::query(r#"
             INSERT INTO "order_event" (
-                id, kind, client_order_id, order_type, order_side, trader_id, client_id, strategy_id, instrument_id, trade_id, currency, quantity, time_in_force, liquidity_side,
+                id, kind, client_order_id, order_type, order_side, trader_id, client_id, reason, strategy_id, instrument_id, trade_id, currency, quantity, time_in_force, liquidity_side,
                 post_only, reduce_only, quote_quantity, reconciliation, price, last_px, last_qty, trigger_price, trigger_type, limit_offset, trailing_offset,
                 trailing_offset_type, expire_time, display_qty, emulation_trigger, trigger_instrument_id, contingency_type,
                 order_list_id, linked_order_ids, parent_order_id,
                 exec_algorithm_id, exec_spawn_id, venue_order_id, account_id, position_id, commission, ts_event, ts_init, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                $21, $22, $23, $24, $25::trailing_offset_type, $26, $27, $28, $29, $30, $31, $32, $33, $34,
-                $35, $36, $37, $38, $39, $40, $41, $42,  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                $21, $22, $23, $24, $25, $26::trailing_offset_type, $27, $28, $29, $30, $31, $32, $33, $34,
+                $35, $36, $37, $38, $39, $40, $41, $42, $43, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             ON CONFLICT (id)
             DO UPDATE
             SET
-                kind = $2, client_order_id = $3, order_type = $4, order_side=$5, trader_id = $6, client_id = $7, strategy_id = $8, instrument_id = $9, trade_id = $10, currency = $11,
-                quantity = $12, time_in_force = $13, liquidity_side = $14, post_only = $15, reduce_only = $16, quote_quantity = $17, reconciliation = $18, price = $19, last_px = $20,
-                last_qty = $21, trigger_price = $22, trigger_type = $23, limit_offset = $24, trailing_offset = $25, trailing_offset_type = $26, expire_time = $27, display_qty = $28,
-                emulation_trigger = $29, trigger_instrument_id = $30, contingency_type = $31, order_list_id = $32, linked_order_ids = $33, parent_order_id = $34, exec_algorithm_id = $35,
-                exec_spawn_id = $36, venue_order_id = $37, account_id = $38, position_id = $39, commission = $40, ts_event = $41, ts_init = $42, updated_at = CURRENT_TIMESTAMP
+                kind = $2, client_order_id = $3, order_type = $4, order_side=$5, trader_id = $6, client_id = $7, reason = $8, strategy_id = $9, instrument_id = $10, trade_id = $11, currency = $12,
+                quantity = $13, time_in_force = $14, liquidity_side = $15, post_only = $16, reduce_only = $17, quote_quantity = $18, reconciliation = $19, price = $20, last_px = $21,
+                last_qty = $22, trigger_price = $23, trigger_type = $24, limit_offset = $25, trailing_offset = $26, trailing_offset_type = $27, expire_time = $28, display_qty = $29,
+                emulation_trigger = $30, trigger_instrument_id = $31, contingency_type = $32, order_list_id = $33, linked_order_ids = $34, parent_order_id = $35, exec_algorithm_id = $36,
+                exec_spawn_id = $37, venue_order_id = $38, account_id = $39, position_id = $40, commission = $41, ts_event = $42, ts_init = $43, updated_at = CURRENT_TIMESTAMP
 
         "#)
             .bind(order_event.id().to_string())
@@ -681,6 +681,7 @@ impl DatabaseQueries {
             .bind(order_event.order_side().map(|x| x.to_string()))
             .bind(order_event.trader_id().to_string())
             .bind(client_id.map(|x| x.to_string()))
+            .bind(order_event.reason().map(|x| x.to_string()))
             .bind(order_event.strategy_id().to_string())
             .bind(order_event.instrument_id().to_string())
             .bind(order_event.trade_id().map(|x| x.to_string()))
@@ -706,7 +707,7 @@ impl DatabaseQueries {
             .bind(order_event.trigger_instrument_id().map(|x| x.to_string()))
             .bind(order_event.contingency_type().map(|x| x.to_string()))
             .bind(order_event.order_list_id().map(|x| x.to_string()))
-            .bind(order_event.linked_order_ids().map(|x| x.iter().map(std::string::ToString::to_string).collect::<Vec<String>>()))
+            .bind(order_event.linked_order_ids().map(|x| x.iter().map(ToString::to_string).collect::<Vec<String>>()))
             .bind(order_event.parent_order_id().map(|x| x.to_string()))
             .bind(order_event.exec_algorithm_id().map(|x| x.to_string()))
             .bind(order_event.exec_spawn_id().map(|x| x.to_string()))

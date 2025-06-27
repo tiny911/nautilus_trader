@@ -22,13 +22,16 @@ use nautilus_model::defi::{
 
 use crate::exchanges::extended::DexExtended;
 
-/// Maverick V1 DEX on Base
+/// Maverick V1 DEX on Base.
 pub static MAVERICK_V1: LazyLock<DexExtended> = LazyLock::new(|| {
     let dex = Dex::new(
         chains::BASE.clone(),
         "Maverick V1",
         "0x5bE9AB35Fa26d8a0F6E9a5C29C1F337A5B3efF4a",
         AmmType::CLAMM,
+        "",
+        "",
+        "",
         "",
     );
     DexExtended::new(dex)

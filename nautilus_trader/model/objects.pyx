@@ -30,6 +30,7 @@ from libc.stdint cimport int64_t
 from libc.stdint cimport uint8_t
 from libc.stdint cimport uint16_t
 from libc.stdint cimport uint64_t
+from libc.string cimport strcmp
 
 from nautilus_trader.core.correctness cimport Condition
 from nautilus_trader.core.rust.core cimport precision_from_cstr
@@ -1360,7 +1361,7 @@ cdef class Currency:
     def __eq__(self, Currency other) -> bool:
         if other is None:
             raise RuntimeError("other was None in __eq__")
-        return self._mem.code == other._mem.code
+        return strcmp(self._mem.code, other._mem.code) == 0
 
     def __hash__(self) -> int:
         return currency_hash(&self._mem)
@@ -1644,6 +1645,9 @@ cdef class AccountBalance:
             and self.free == other.free
         )
 
+    def __hash__(self) -> int:
+        return hash((self.total, self.locked, self.free))
+
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}("
@@ -1678,6 +1682,21 @@ cdef class AccountBalance:
 
         """
         return AccountBalance.from_dict_c(values)
+
+    cpdef AccountBalance copy(self):
+        """
+        Return a copy of this account balance.
+
+        Returns
+        -------
+        AccountBalance
+
+        """
+        return AccountBalance(
+            total=self.total,
+            locked=self.locked,
+            free=self.free,
+        )
 
     cpdef dict to_dict(self):
         """
@@ -1742,6 +1761,9 @@ cdef class MarginBalance:
             and self.instrument_id == other.instrument_id
         )
 
+    def __hash__(self) -> int:
+        return hash((self.initial, self.maintenance, self.instrument_id))
+
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}("
@@ -1777,6 +1799,21 @@ cdef class MarginBalance:
 
         """
         return MarginBalance.from_dict_c(values)
+
+    cpdef MarginBalance copy(self):
+        """
+        Return a copy of this margin balance.
+
+        Returns
+        -------
+        MarginBalance
+
+        """
+        return MarginBalance(
+            initial=self.initial,
+            maintenance=self.maintenance,
+            instrument_id=self.instrument_id,
+        )
 
     cpdef dict to_dict(self):
         """

@@ -13,6 +13,8 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! Implementation of a simple *cash* account – an account that cannot hold leveraged positions.
+
 use std::{
     collections::HashMap,
     fmt::Display,
@@ -178,6 +180,10 @@ impl Account for CashAccount {
 
     fn apply(&mut self, event: AccountState) {
         self.base_apply(event);
+    }
+
+    fn purge_account_events(&mut self, ts_now: nautilus_core::UnixNanos, lookback_secs: u64) {
+        self.base.base_purge_account_events(ts_now, lookback_secs);
     }
 
     fn calculate_balance_locked(

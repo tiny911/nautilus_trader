@@ -22,13 +22,16 @@ use nautilus_model::defi::{
 
 use crate::exchanges::extended::DexExtended;
 
-/// Curve Finance DEX on Ethereum
+/// Curve Finance DEX on Ethereum.
 pub static CURVE_FINANCE: LazyLock<DexExtended> = LazyLock::new(|| {
     let dex = Dex::new(
         chains::ETHEREUM.clone(),
         "Curve Finance",
         "0xB9fC157394Af804a3578134A6585C0dc9cc990d4",
         AmmType::StableSwap,
+        "",
+        "",
+        "",
         "",
     );
     DexExtended::new(dex)

@@ -22,13 +22,16 @@ use nautilus_model::defi::{
 
 use crate::exchanges::extended::DexExtended;
 
-/// Fluid DEX on Ethereum
+/// Fluid DEX on Ethereum.
 pub static FLUID_DEX: LazyLock<DexExtended> = LazyLock::new(|| {
     let dex = Dex::new(
         chains::ETHEREUM.clone(),
         "Fluid DEX",
         "0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085",
         AmmType::CLAMM,
+        "",
+        "",
+        "",
         "",
     );
     DexExtended::new(dex)

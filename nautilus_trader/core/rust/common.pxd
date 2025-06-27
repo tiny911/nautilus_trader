@@ -163,7 +163,7 @@ cdef extern from "../includes/common.h":
         UUID4_t event_id;
         # UNIX timestamp (nanoseconds) when the event occurred.
         uint64_t ts_event;
-        # UNIX timestamp (nanoseconds) when the instance was initialized.
+        # UNIX timestamp (nanoseconds) when the instance was created.
         uint64_t ts_init;
 
     # Legacy time event handler for Cython/FFI inter-operatbility
@@ -177,6 +177,17 @@ cdef extern from "../includes/common.h":
         TimeEvent_t event;
         # The callable raw pointer.
         char *callback_ptr;
+
+    # Match a topic and a string pattern using iterative backtracking algorithm
+    # pattern can contains -
+    # '*' - match 0 or more characters after this
+    # '?' - match any character once
+    # 'a-z' - match the specific character
+    #
+    # # Safety
+    #
+    # Passing `NULL` pointers will result in a panic.
+    uint8_t is_matching_ffi(const char *topic, const char *pattern);
 
     TestClock_API test_clock_new();
 
@@ -237,7 +248,8 @@ cdef extern from "../includes/common.h":
                               uint64_t start_time_ns,
                               uint64_t stop_time_ns,
                               PyObject *callback_ptr,
-                              uint8_t allow_past);
+                              uint8_t allow_past,
+                              uint8_t fire_immediately);
 
     # # Safety
     #
@@ -317,7 +329,8 @@ cdef extern from "../includes/common.h":
                               uint64_t start_time_ns,
                               uint64_t stop_time_ns,
                               PyObject *callback_ptr,
-                              uint8_t allow_past);
+                              uint8_t allow_past,
+                              uint8_t fire_immediately);
 
     # # Safety
     #

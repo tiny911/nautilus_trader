@@ -15,20 +15,26 @@
 
 mod common;
 
-use std::{any::Any, cell::RefCell, num::NonZeroUsize, rc::Rc};
+use std::{any::Any, cell::RefCell, num::NonZeroUsize, rc::Rc, sync::Arc};
 
 use common::mocks::MockDataClient;
+#[cfg(feature = "defi")]
+use nautilus_common::messages::defi::{
+    DefiSubscribeCommand, DefiUnsubscribeCommand, SubscribeBlocks, SubscribePoolSwaps,
+    UnsubscribeBlocks, UnsubscribePoolSwaps,
+};
 use nautilus_common::{
     cache::Cache,
     clock::{Clock, TestClock},
     messages::data::{
-        DataCommand, RequestBars, RequestBookSnapshot, RequestCommand, RequestData,
+        DataCommand, RequestBars, RequestBookSnapshot, RequestCommand, RequestCustomData,
         RequestInstrument, RequestInstruments, RequestQuotes, RequestTrades, SubscribeBars,
         SubscribeBookDeltas, SubscribeBookDepth10, SubscribeBookSnapshots, SubscribeCommand,
-        SubscribeData, SubscribeIndexPrices, SubscribeInstrument, SubscribeMarkPrices,
+        SubscribeCustomData, SubscribeIndexPrices, SubscribeInstrument, SubscribeMarkPrices,
         SubscribeQuotes, SubscribeTrades, UnsubscribeBars, UnsubscribeBookDeltas,
-        UnsubscribeBookSnapshots, UnsubscribeCommand, UnsubscribeData, UnsubscribeIndexPrices,
-        UnsubscribeInstrument, UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
+        UnsubscribeBookSnapshots, UnsubscribeCommand, UnsubscribeCustomData,
+        UnsubscribeIndexPrices, UnsubscribeInstrument, UnsubscribeMarkPrices, UnsubscribeQuotes,
+        UnsubscribeTrades,
     },
     msgbus::{
         self, MessageBus,
@@ -52,6 +58,16 @@ use nautilus_model::{
     types::Price,
 };
 use rstest::*;
+#[cfg(feature = "defi")]
+use {
+    alloy_primitives::Address,
+    nautilus_model::{
+        defi::{Block, Blockchain, DefiData, PoolSwap},
+        defi::{Pool, Token},
+        enums::OrderSide,
+        types::Quantity,
+    },
+};
 
 #[fixture]
 fn client_id() -> ClientId {
@@ -319,7 +335,7 @@ fn test_execute_subscribe_custom_data(
     );
 
     let data_type = DataType::new(stringify!(String), None);
-    let sub = SubscribeData::new(
+    let sub = SubscribeCustomData::new(
         Some(client_id),
         Some(venue),
         data_type.clone(),
@@ -335,7 +351,7 @@ fn test_execute_subscribe_custom_data(
         assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
     }
 
-    let unsub = UnsubscribeData::new(
+    let unsub = UnsubscribeCustomData::new(
         Some(client_id),
         Some(venue),
         data_type.clone(),
@@ -848,7 +864,7 @@ fn test_execute_request_data(
         &mut data_engine,
     );
 
-    let req = RequestData {
+    let req = RequestCustomData {
         client_id,
         data_type: DataType::new("X", None),
         request_id: UUID4::new(),
@@ -1104,11 +1120,11 @@ fn test_process_instrument(
     let cmd = DataCommand::Subscribe(SubscribeCommand::Instrument(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
 
     let handler = get_message_saving_handler::<InstrumentAny>(None);
     let topic = switchboard::get_instrument_topic(audusd_sim.id());
-    msgbus::subscribe(topic, handler.clone(), None);
+    msgbus::subscribe(topic.into(), handler.clone(), None);
 
     let mut data_engine = data_engine.borrow_mut();
     data_engine.process(&audusd_sim as &dyn Any);
@@ -1147,12 +1163,12 @@ fn test_process_book_delta(
     let cmd = DataCommand::Subscribe(SubscribeCommand::BookDeltas(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
 
     let delta = stub_delta();
     let handler = get_message_saving_handler::<OrderBookDeltas>(None);
     let topic = switchboard::get_book_deltas_topic(delta.instrument_id);
-    msgbus::subscribe(topic, handler.clone(), None);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
 
     let mut data_engine = data_engine.borrow_mut();
     data_engine.process_data(Data::Delta(delta));
@@ -1186,13 +1202,13 @@ fn test_process_book_deltas(
     let cmd = DataCommand::Subscribe(SubscribeCommand::BookDeltas(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
 
     // TODO: Using FFI API wrapper temporarily until Cython gone
     let deltas = OrderBookDeltas_API::new(stub_deltas());
     let handler = get_message_saving_handler::<OrderBookDeltas>(None);
     let topic = switchboard::get_book_deltas_topic(deltas.instrument_id);
-    msgbus::subscribe(topic, handler.clone(), None);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
 
     let mut data_engine = data_engine.borrow_mut();
     data_engine.process_data(Data::Deltas(deltas.clone()));
@@ -1227,12 +1243,12 @@ fn test_process_book_depth10(
     let cmd = DataCommand::Subscribe(SubscribeCommand::BookDepth10(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
 
     let depth = stub_depth10();
     let handler = get_message_saving_handler::<OrderBookDepth10>(None);
     let topic = switchboard::get_book_depth10_topic(depth.instrument_id);
-    msgbus::subscribe(topic, handler.clone(), None);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
 
     let mut data_engine = data_engine.borrow_mut();
     data_engine.process_data(Data::from(depth));
@@ -1264,12 +1280,12 @@ fn test_process_quote_tick(
     let cmd = DataCommand::Subscribe(SubscribeCommand::Quotes(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
 
     let quote = QuoteTick::default();
     let handler = get_message_saving_handler::<QuoteTick>(None);
     let topic = switchboard::get_quotes_topic(quote.instrument_id);
-    msgbus::subscribe(topic, handler.clone(), None);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
 
     let mut data_engine = data_engine.borrow_mut();
     data_engine.process_data(Data::Quote(quote));
@@ -1302,12 +1318,12 @@ fn test_process_trade_tick(
     let cmd = DataCommand::Subscribe(SubscribeCommand::Trades(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
 
     let trade = TradeTick::default();
     let handler = get_message_saving_handler::<TradeTick>(None);
     let topic = switchboard::get_trades_topic(trade.instrument_id);
-    msgbus::subscribe(topic, handler.clone(), None);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
 
     let mut data_engine = data_engine.borrow_mut();
     data_engine.process_data(Data::Trade(trade));
@@ -1340,7 +1356,7 @@ fn test_process_mark_price(
     let cmd = DataCommand::Subscribe(SubscribeCommand::MarkPrices(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
 
     let mark_price = MarkPriceUpdate::new(
         audusd_sim.id,
@@ -1350,7 +1366,7 @@ fn test_process_mark_price(
     );
     let handler = get_message_saving_handler::<MarkPriceUpdate>(None);
     let topic = switchboard::get_mark_price_topic(mark_price.instrument_id);
-    msgbus::subscribe(topic, handler.clone(), None);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
 
     let mut data_engine = data_engine.borrow_mut();
     data_engine.process_data(Data::MarkPriceUpdate(mark_price));
@@ -1394,7 +1410,7 @@ fn test_process_index_price(
     let cmd = DataCommand::Subscribe(SubscribeCommand::IndexPrices(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
 
     let index_price = IndexPriceUpdate::new(
         audusd_sim.id,
@@ -1404,7 +1420,7 @@ fn test_process_index_price(
     );
     let handler = get_message_saving_handler::<IndexPriceUpdate>(None);
     let topic = switchboard::get_index_price_topic(index_price.instrument_id);
-    msgbus::subscribe(topic, handler.clone(), None);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
 
     let mut data_engine = data_engine.borrow_mut();
     data_engine.process_data(Data::IndexPriceUpdate(index_price));
@@ -1443,11 +1459,11 @@ fn test_process_bar(data_engine: Rc<RefCell<DataEngine>>, data_client: DataClien
     let cmd = DataCommand::Subscribe(SubscribeCommand::Bars(sub));
 
     let endpoint = MessagingSwitchboard::data_engine_execute();
-    msgbus::send(&endpoint, &cmd as &dyn Any);
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
 
     let handler = get_message_saving_handler::<Bar>(None);
     let topic = switchboard::get_bars_topic(bar.bar_type);
-    msgbus::subscribe(topic, handler.clone(), None);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
 
     let mut data_engine = data_engine.borrow_mut();
     data_engine.process_data(Data::Bar(bar));
@@ -1457,4 +1473,235 @@ fn test_process_bar(data_engine: Rc<RefCell<DataEngine>>, data_client: DataClien
     assert_eq!(cache.bar(&bar.bar_type), Some(bar).as_ref());
     assert_eq!(messages.len(), 1);
     assert!(messages.contains(&bar));
+}
+
+// ------------------------------------------------------------------------------------------------
+// DeFi subscription and processing tests
+// ------------------------------------------------------------------------------------------------
+
+#[cfg(feature = "defi")]
+#[rstest]
+fn test_execute_subscribe_blocks(
+    data_engine: Rc<RefCell<DataEngine>>,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
+
+    let blockchain = Blockchain::Ethereum;
+    let sub_cmd = DataCommand::DefiSubscribe(DefiSubscribeCommand::Blocks(SubscribeBlocks {
+        chain: blockchain,
+        client_id: Some(client_id),
+        command_id: UUID4::new(),
+        ts_init: UnixNanos::default(),
+        params: None,
+    }));
+    data_engine.execute(&sub_cmd);
+
+    assert!(data_engine.subscribed_blocks().contains(&blockchain));
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
+
+    let unsub_cmd =
+        DataCommand::DefiUnsubscribe(DefiUnsubscribeCommand::Blocks(UnsubscribeBlocks {
+            chain: blockchain,
+            client_id: Some(client_id),
+            command_id: UUID4::new(),
+            ts_init: UnixNanos::default(),
+            params: None,
+        }));
+    data_engine.execute(&unsub_cmd);
+
+    assert!(!data_engine.subscribed_blocks().contains(&blockchain));
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
+}
+
+#[cfg(feature = "defi")]
+#[rstest]
+fn test_execute_subscribe_pool_swaps(
+    data_engine: Rc<RefCell<DataEngine>>,
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+    let recorder: Rc<RefCell<Vec<DataCommand>>> = Rc::new(RefCell::new(Vec::new()));
+    register_mock_client(
+        clock,
+        cache,
+        client_id,
+        venue,
+        None,
+        &recorder,
+        &mut data_engine,
+    );
+
+    let address = Address::from([0x12; 20]);
+    let sub_cmd = DataCommand::DefiSubscribe(DefiSubscribeCommand::PoolSwaps(SubscribePoolSwaps {
+        address,
+        client_id: Some(client_id),
+        command_id: UUID4::new(),
+        ts_init: UnixNanos::default(),
+        params: None,
+    }));
+    data_engine.execute(&sub_cmd);
+
+    assert!(data_engine.subscribed_pool_swaps().contains(&address));
+    {
+        assert_eq!(recorder.borrow().as_slice(), &[sub_cmd.clone()]);
+    }
+
+    let unsub_cmd =
+        DataCommand::DefiUnsubscribe(DefiUnsubscribeCommand::PoolSwaps(UnsubscribePoolSwaps {
+            address,
+            client_id: Some(client_id),
+            command_id: UUID4::new(),
+            ts_init: UnixNanos::default(),
+            params: None,
+        }));
+    data_engine.execute(&unsub_cmd);
+
+    assert!(!data_engine.subscribed_pool_swaps().contains(&address));
+    assert_eq!(recorder.borrow().as_slice(), &[sub_cmd, unsub_cmd]);
+}
+
+#[cfg(feature = "defi")]
+#[rstest]
+fn test_process_block(data_engine: Rc<RefCell<DataEngine>>, data_client: DataClientAdapter) {
+    let client_id = data_client.client_id;
+    data_engine.borrow_mut().register_client(data_client, None);
+
+    let blockchain = Blockchain::Ethereum;
+    let sub = DefiSubscribeCommand::Blocks(SubscribeBlocks {
+        chain: blockchain,
+        client_id: Some(client_id),
+        command_id: UUID4::new(),
+        ts_init: UnixNanos::default(),
+        params: None,
+    });
+    let cmd = DataCommand::DefiSubscribe(sub);
+
+    let endpoint = MessagingSwitchboard::data_engine_execute();
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
+
+    let block = Block::new(
+        "0x123".to_string(),
+        "0x456".to_string(),
+        1u64,
+        "miner".into(),
+        1000000u64,
+        500000u64,
+        UnixNanos::from(1),
+        Some(blockchain),
+    );
+    let handler = get_message_saving_handler::<Block>(None);
+    let topic = switchboard::get_defi_blocks_topic(blockchain);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
+
+    let mut data_engine = data_engine.borrow_mut();
+    data_engine.process_defi_data(DefiData::Block(block.clone()));
+    let messages = get_saved_messages::<Block>(handler);
+
+    assert_eq!(messages.len(), 1);
+    assert!(messages.contains(&block));
+}
+
+#[cfg(feature = "defi")]
+#[rstest]
+fn test_process_pool_swap(data_engine: Rc<RefCell<DataEngine>>, data_client: DataClientAdapter) {
+    use nautilus_model::defi::{AmmType, Dex, chain::chains};
+
+    let client_id = data_client.client_id;
+    data_engine.borrow_mut().register_client(data_client, None);
+
+    let address = Address::from([0x12; 20]);
+    let sub = DefiSubscribeCommand::PoolSwaps(SubscribePoolSwaps {
+        address,
+        client_id: Some(client_id),
+        command_id: UUID4::new(),
+        ts_init: UnixNanos::default(),
+        params: None,
+    });
+    let cmd = DataCommand::DefiSubscribe(sub);
+
+    let endpoint = MessagingSwitchboard::data_engine_execute();
+    msgbus::send_any(endpoint, &cmd as &dyn Any);
+
+    // Create a pool swap
+    let chain = Arc::new(chains::ETHEREUM.clone());
+    let dex = Dex::new(
+        chains::ETHEREUM.clone(),
+        "Uniswap V3",
+        "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+        AmmType::CLAMM,
+        "PoolCreated",
+        "Swap",
+        "Mint",
+        "Burn",
+    );
+    let token0 = Token::new(
+        chain.clone(),
+        Address::from([0x11; 20]),
+        "WETH".to_string(),
+        "WETH".to_string(),
+        18,
+    );
+    let token1 = Token::new(
+        chain.clone(),
+        Address::from([0x22; 20]),
+        "USDC".to_string(),
+        "USDC".to_string(),
+        6,
+    );
+    let pool = Pool::new(
+        chain.clone(),
+        dex.clone(),
+        address,
+        0u64,
+        token0,
+        token1,
+        500u32,
+        10u32,
+        UnixNanos::from(1),
+    );
+
+    let swap = PoolSwap::new(
+        chain,
+        Arc::new(dex),
+        Arc::new(pool),
+        1000u64,
+        "0x123".to_string(),
+        0,
+        0,
+        UnixNanos::from(1),
+        address,
+        OrderSide::Buy,
+        Quantity::from("1000"),
+        Price::from("500"),
+    );
+
+    let handler = get_message_saving_handler::<PoolSwap>(None);
+    let topic = switchboard::get_defi_pool_swaps_topic(address);
+    msgbus::subscribe_topic(topic, handler.clone(), None);
+
+    let mut data_engine = data_engine.borrow_mut();
+    data_engine.process_defi_data(DefiData::PoolSwap(swap.clone()));
+    let messages = get_saved_messages::<PoolSwap>(handler);
+
+    assert_eq!(messages.len(), 1);
+    assert!(messages.contains(&swap));
 }

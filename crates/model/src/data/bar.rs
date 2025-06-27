@@ -34,7 +34,7 @@ use nautilus_core::{
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::GetTsInit;
+use super::HasTsInit;
 use crate::{
     enums::{AggregationSource, BarAggregation, PriceType},
     identifiers::InstrumentId,
@@ -294,15 +294,18 @@ pub fn get_time_bar_start(
             start_time += origin_offset;
 
             if now < start_time {
-                start_time = subtract_n_months(start_time, 12);
+                start_time =
+                    subtract_n_months(start_time, 12).expect("Failed to subtract 12 months");
             }
 
             let months_step = step as u32;
             while start_time <= now {
-                start_time = add_n_months(start_time, months_step);
+                start_time =
+                    add_n_months(start_time, months_step).expect("Failed to add months in loop");
             }
 
-            start_time = subtract_n_months(start_time, months_step);
+            start_time =
+                subtract_n_months(start_time, months_step).expect("Failed to subtract months_step");
             start_time
         }
         _ => panic!(
@@ -710,7 +713,7 @@ impl Display for BarType {
                 spec,
                 aggregation_source,
             } => {
-                write!(f, "{}-{}-{}", instrument_id, spec, aggregation_source)
+                write!(f, "{instrument_id}-{spec}-{aggregation_source}")
             }
             BarType::Composite {
                 instrument_id,
@@ -778,7 +781,7 @@ pub struct Bar {
     pub volume: Quantity,
     /// UNIX timestamp (nanoseconds) when the data event occurred.
     pub ts_event: UnixNanos,
-    /// UNIX timestamp (nanoseconds) when the struct was initialized.
+    /// UNIX timestamp (nanoseconds) when the instance was created.
     pub ts_init: UnixNanos,
 }
 
@@ -894,7 +897,7 @@ impl Display for Bar {
 
 impl Serializable for Bar {}
 
-impl GetTsInit for Bar {
+impl HasTsInit for Bar {
     fn ts_init(&self) -> UnixNanos {
         self.ts_init
     }

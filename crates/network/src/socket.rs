@@ -105,7 +105,7 @@ pub enum WriterCommand {
     Send(Bytes),
 }
 
-/// Creates a TcpStream with the server.
+/// Creates a `TcpStream` with the server.
 ///
 /// The stream can be encrypted with TLS or Plain. The stream is split into
 /// read and write ends:
@@ -138,6 +138,11 @@ struct SocketClientInner {
 }
 
 impl SocketClientInner {
+    /// Connect to a URL with the specified configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connection fails or configuration is invalid.
     pub async fn connect_url(
         config: SocketConfig,
         handler: Option<Arc<TcpMessageHandler>>,
@@ -200,7 +205,7 @@ impl SocketClientInner {
             reconnect_backoff_factor.unwrap_or(1.5),
             reconnect_jitter_ms.unwrap_or(100),
             true, // immediate-first
-        );
+        )?;
 
         Ok(Self {
             config,
@@ -216,6 +221,11 @@ impl SocketClientInner {
         })
     }
 
+    /// Establish a TLS or plain TCP connection with the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection cannot be established.
     pub async fn tls_connect_with_server(
         url: &str,
         mode: Mode,
@@ -392,13 +402,13 @@ impl SocketClientInner {
                                 }
 
                                 #[cfg(feature = "python")]
-                                if let Some(py_handler) = &py_handler {
-                                    if let Err(e) = Python::with_gil(|py| {
+                                if let Some(py_handler) = &py_handler
+                                    && let Err(e) = Python::with_gil(|py| {
                                         py_handler.call1(py, (data.as_slice(),))
-                                    }) {
-                                        tracing::error!("Call to handler failed: {e}");
-                                        break;
-                                    }
+                                    })
+                                {
+                                    tracing::error!("Call to handler failed: {e}");
+                                    break;
                                 }
                             }
                         }
@@ -544,11 +554,11 @@ impl Drop for SocketClientInner {
             log_task_aborted("write");
         }
 
-        if let Some(ref handle) = self.heartbeat_task.take() {
-            if !handle.is_finished() {
-                handle.abort();
-                log_task_aborted("heartbeat");
-            }
+        if let Some(ref handle) = self.heartbeat_task.take()
+            && !handle.is_finished()
+        {
+            handle.abort();
+            log_task_aborted("heartbeat");
         }
     }
 }
@@ -717,7 +727,7 @@ impl SocketClient {
             })
             .await
             .map_err(|_| SendError::Timeout)?;
-            inner.map_err(|_| SendError::Closed)?;
+            inner.map_err(|()| SendError::Closed)?;
         }
 
         let msg = WriterCommand::Send(data.into());
@@ -754,11 +764,11 @@ impl SocketClient {
                             log_task_aborted("read");
                         }
 
-                        if let Some(task) = &inner.heartbeat_task {
-                            if !task.is_finished() {
-                                task.abort();
-                                log_task_aborted("heartbeat");
-                            }
+                        if let Some(task) = &inner.heartbeat_task
+                            && !task.is_finished()
+                        {
+                            task.abort();
+                            log_task_aborted("heartbeat");
                         }
                     })
                     .await

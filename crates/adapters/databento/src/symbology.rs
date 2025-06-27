@@ -13,8 +13,6 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::collections::HashMap;
-
 use ahash::AHashMap;
 use databento::dbn::{self, PitSymbolMap, SType};
 use dbn::{Publisher, Record};
@@ -38,20 +36,24 @@ impl MetadataCache {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if metadata for the given `date` cannot be retrieved.
     pub fn symbol_map_for_date(&mut self, date: time::Date) -> dbn::Result<&PitSymbolMap> {
-        // Insert metadata for date if missing
         if !self.date_metadata_map.contains_key(&date) {
             let map = self.metadata.symbol_map_for_date(date)?;
             self.date_metadata_map.insert(date, map);
         }
-        // SAFETY: Key just inserted if absent
-        Ok(self.date_metadata_map.get(&date).unwrap())
+
+        self.date_metadata_map
+            .get(&date)
+            .ok_or_else(|| dbn::Error::decode(format!("metadata cache missing for date {date}")))
     }
 }
 
 pub fn instrument_id_to_symbol_string(
     instrument_id: InstrumentId,
-    symbol_venue_map: &mut HashMap<Symbol, Venue>,
+    symbol_venue_map: &mut AHashMap<Symbol, Venue>,
 ) -> String {
     symbol_venue_map
         .entry(instrument_id.symbol)
@@ -59,11 +61,18 @@ pub fn instrument_id_to_symbol_string(
     instrument_id.symbol.to_string()
 }
 
+/// # Errors
+///
+/// Returns an error if mapping record to `InstrumentId` fails.
+///
+/// # Panics
+///
+/// Panics if the raw symbol from metadata cannot be converted into a `Symbol`.
 pub fn decode_nautilus_instrument_id(
     record: &dbn::RecordRef,
     metadata: &mut MetadataCache,
     publisher_venue_map: &IndexMap<PublisherId, Venue>,
-    symbol_venue_map: &HashMap<Symbol, Venue>,
+    symbol_venue_map: &AHashMap<Symbol, Venue>,
 ) -> anyhow::Result<InstrumentId> {
     let publisher = record
         .publisher()
@@ -73,15 +82,22 @@ pub fn decode_nautilus_instrument_id(
         .get(&publisher_id)
         .ok_or_else(|| anyhow::anyhow!("`Venue` not found for `publisher_id` {publisher_id}"))?;
     let mut instrument_id = get_nautilus_instrument_id_for_record(record, metadata, *venue)?;
-    if publisher == Publisher::GlbxMdp3Glbx {
-        if let Some(venue) = symbol_venue_map.get(&instrument_id.symbol) {
-            instrument_id.venue = *venue;
-        }
+    if publisher == Publisher::GlbxMdp3Glbx
+        && let Some(venue) = symbol_venue_map.get(&instrument_id.symbol)
+    {
+        instrument_id.venue = *venue;
     }
 
     Ok(instrument_id)
 }
 
+/// # Errors
+///
+/// Returns an error if mapping record to `InstrumentId` fails or timestamp overflow occurs.
+///
+/// # Panics
+///
+/// Panics if the raw symbol from metadata cannot be converted into a `Symbol`.
 pub fn get_nautilus_instrument_id_for_record(
     record: &dbn::RecordRef,
     metadata: &mut MetadataCache,
@@ -146,6 +162,9 @@ pub fn infer_symbology_type(symbol: &str) -> SType {
     SType::RawSymbol
 }
 
+/// # Errors
+///
+/// Returns an error if `symbols` is empty or symbols have inconsistent symbology types.
 pub fn check_consistent_symbology(symbols: &[&str]) -> anyhow::Result<()> {
     if symbols.is_empty() {
         anyhow::bail!("No symbols provided");
@@ -209,7 +228,7 @@ mod tests {
         let symbol = Symbol::from("TEST");
         let venue = Venue::from("XNAS");
         let instrument_id = InstrumentId::new(symbol, venue);
-        let mut map: HashMap<Symbol, Venue> = HashMap::new();
+        let mut map: AHashMap<Symbol, Venue> = AHashMap::new();
 
         // First call should insert the mapping
         let sym_str = instrument_id_to_symbol_string(instrument_id, &mut map);

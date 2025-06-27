@@ -13,14 +13,19 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use alloy::primitives::Address;
+use nautilus_core::UnixNanos;
 use sqlx::{FromRow, Row, postgres::PgRow};
+
+use crate::validation::validate_address;
 
 /// A data transfer object that maps database rows to token data.
 ///
 /// Implements `FromRow` trait to automatically convert PostgreSQL results into `TokenRow`
 /// objects that can be transformed into domain entity `Token` objects.
+#[derive(Debug)]
 pub struct TokenRow {
-    pub address: String,
+    pub address: Address,
     pub name: String,
     pub symbol: String,
     pub decimals: i32,
@@ -28,7 +33,7 @@ pub struct TokenRow {
 
 impl<'r> FromRow<'r, PgRow> for TokenRow {
     fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
-        let address = row.try_get::<String, _>("address")?;
+        let address = validate_address(row.try_get::<String, _>("address")?.as_str()).unwrap();
         let name = row.try_get::<String, _>("name")?;
         let symbol = row.try_get::<String, _>("symbol")?;
         let decimals = row.try_get::<i32, _>("decimals")?;
@@ -40,5 +45,25 @@ impl<'r> FromRow<'r, PgRow> for TokenRow {
             decimals,
         };
         Ok(token)
+    }
+}
+
+/// A data transfer object that maps database rows to block timestamp data.
+#[derive(Debug)]
+pub struct BlockTimestampRow {
+    /// The block number.
+    pub number: u64,
+    /// The block timestamp.
+    pub timestamp: UnixNanos,
+}
+
+impl FromRow<'_, PgRow> for BlockTimestampRow {
+    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
+        let number = row.try_get::<i64, _>("number")? as u64;
+        let timestamp = row.try_get::<String, _>("timestamp")?;
+        Ok(Self {
+            number,
+            timestamp: UnixNanos::from(timestamp),
+        })
     }
 }

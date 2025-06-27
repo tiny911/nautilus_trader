@@ -22,13 +22,16 @@ use nautilus_model::defi::{
 
 use crate::exchanges::extended::DexExtended;
 
-/// Curve Finance DEX on Arbitrum
+/// Curve Finance DEX on Arbitrum.
 pub static CURVE_FINANCE: LazyLock<DexExtended> = LazyLock::new(|| {
     let dex = Dex::new(
         chains::ARBITRUM.clone(),
         "Curve Finance",
         "0xb17b674D9c5CB2e441F8e196a2f048A81355d031",
         AmmType::StableSwap,
+        "",
+        "",
+        "",
         "",
     );
     DexExtended::new(dex)

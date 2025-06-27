@@ -24,10 +24,10 @@ use nautilus_common::{
     cache::Cache,
     clock::Clock,
     logging::{CMD, EVT, RECV},
-    msgbus::{
-        handler::ShareableMessageHandler,
-        {self},
+    messages::execution::{
+        CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrder, SubmitOrderList, TradingCommand,
     },
+    msgbus::{self, handler::ShareableMessageHandler},
 };
 use nautilus_core::uuid::UUID4;
 use nautilus_model::{
@@ -41,13 +41,7 @@ use nautilus_model::{
 };
 
 use crate::{
-    matching_core::OrderMatchingCore,
-    messages::{
-        CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrder, SubmitOrderList, TradingCommand,
-        cancel::CancelOrderHandlerAny, modify::ModifyOrderHandlerAny,
-        submit::SubmitOrderHandlerAny,
-    },
-    order_manager::manager::OrderManager,
+    matching_core::OrderMatchingCore, order_manager::manager::OrderManager,
     trailing::trailing_stop_calculate,
 };
 
@@ -78,8 +72,7 @@ impl OrderEmulator {
         // self.register_base(portfolio, msgbus, cache, clock);
 
         let active_local = true;
-        let manager =
-            OrderManager::new(clock.clone(), cache.clone(), active_local, None, None, None);
+        let manager = OrderManager::new(clock.clone(), cache.clone(), active_local);
 
         Self {
             clock,
@@ -98,17 +91,18 @@ impl OrderEmulator {
         self.on_event_handler = Some(handler);
     }
 
-    pub fn set_submit_order_handler(&mut self, handler: SubmitOrderHandlerAny) {
-        self.manager.set_submit_order_handler(handler);
-    }
-
-    pub fn set_cancel_order_handler(&mut self, handler: CancelOrderHandlerAny) {
-        self.manager.set_cancel_order_handler(handler);
-    }
-
-    pub fn set_modify_order_handler(&mut self, handler: ModifyOrderHandlerAny) {
-        self.manager.set_modify_order_handler(handler);
-    }
+    // TODO: WIP
+    // pub fn set_submit_order_handler(&mut self, handler: SubmitOrderHandlerAny) {
+    //     self.manager.set_submit_order_handler(handler);
+    // }
+    //
+    // pub fn set_cancel_order_handler(&mut self, handler: CancelOrderHandlerAny) {
+    //     self.manager.set_cancel_order_handler(handler);
+    // }
+    //
+    // pub fn set_modify_order_handler(&mut self, handler: ModifyOrderHandlerAny) {
+    //     self.manager.set_modify_order_handler(handler);
+    // }
 
     #[must_use]
     pub fn subscribed_quotes(&self) -> Vec<InstrumentId> {
@@ -225,16 +219,12 @@ impl OrderEmulator {
 
         self.manager.handle_event(event.clone());
 
-        if let Some(order) = self.cache.borrow().order(&event.client_order_id()) {
-            if order.is_closed() {
-                if let Some(matching_core) = self.matching_cores.get_mut(&order.instrument_id()) {
-                    if let Err(e) =
-                        matching_core.delete_order(&PassiveOrderAny::from(order.clone()))
-                    {
-                        log::error!("Error deleting order: {e}");
-                    }
-                }
-            }
+        if let Some(order) = self.cache.borrow().order(&event.client_order_id())
+            && order.is_closed()
+            && let Some(matching_core) = self.matching_cores.get_mut(&order.instrument_id())
+            && let Err(e) = matching_core.delete_order(&PassiveOrderAny::from(order.clone()))
+        {
+            log::error!("Error deleting order: {e}");
         }
         // else: Order not in cache yet
     }
@@ -438,7 +428,7 @@ impl OrderEmulator {
             self.manager.send_risk_event(OrderEventAny::Emulated(event));
 
             msgbus::publish(
-                &format!("events.order.{}", order.strategy_id()).into(),
+                format!("events.order.{}", order.strategy_id()).into(),
                 &OrderEventAny::Emulated(event),
             );
         }
@@ -725,10 +715,10 @@ impl OrderEmulator {
             .trigger_instrument_id()
             .unwrap_or(order.instrument_id());
 
-        if let Some(matching_core) = self.matching_cores.get_mut(&trigger_instrument_id) {
-            if let Err(e) = matching_core.delete_order(&PassiveOrderAny::from(order.clone())) {
-                log::error!("Cannot delete order: {e:?}");
-            }
+        if let Some(matching_core) = self.matching_cores.get_mut(&trigger_instrument_id)
+            && let Err(e) = matching_core.delete_order(&PassiveOrderAny::from(order.clone()))
+        {
+            log::error!("Cannot delete order: {e:?}");
         }
 
         self.cache
@@ -757,8 +747,8 @@ impl OrderEmulator {
         if !self.subscribed_strategies.contains(&strategy_id) {
             // Subscribe to all strategy events
             if let Some(handler) = &self.on_event_handler {
-                msgbus::subscribe(format!("events.order.{strategy_id}"), handler.clone(), None);
-                msgbus::subscribe(
+                msgbus::subscribe_str(format!("events.order.{strategy_id}"), handler.clone(), None);
+                msgbus::subscribe_str(
                     format!("events.position.{strategy_id}"),
                     handler.clone(),
                     None,
@@ -768,10 +758,10 @@ impl OrderEmulator {
             }
         }
 
-        if let Some(position_id) = position_id {
-            if !self.monitored_positions.contains(&position_id) {
-                self.monitored_positions.insert(position_id);
-            }
+        if let Some(position_id) = position_id
+            && !self.monitored_positions.contains(&position_id)
+        {
+            self.monitored_positions.insert(position_id);
         }
     }
 
@@ -879,7 +869,7 @@ impl OrderEmulator {
             command.order = OrderAny::Limit(transformed.clone());
 
             msgbus::publish(
-                &format!("events.order.{}", order.strategy_id()).into(),
+                format!("events.order.{}", order.strategy_id()).into(),
                 transformed.last_event(),
             );
 
@@ -920,7 +910,7 @@ impl OrderEmulator {
 
             // Publish event
             msgbus::publish(
-                &format!("events.order.{}", transformed.strategy_id()).into(),
+                format!("events.order.{}", transformed.strategy_id()).into(),
                 &OrderEventAny::Released(event),
             );
 
@@ -1003,7 +993,7 @@ impl OrderEmulator {
             command.order = OrderAny::Market(transformed.clone());
 
             msgbus::publish(
-                &format!("events.order.{}", order.strategy_id()).into(),
+                format!("events.order.{}", order.strategy_id()).into(),
                 transformed.last_event(),
             );
 
@@ -1045,7 +1035,7 @@ impl OrderEmulator {
 
             // Publish event
             msgbus::publish(
-                &format!("events.order.{}", order.strategy_id()).into(),
+                format!("events.order.{}", order.strategy_id()).into(),
                 &OrderEventAny::Released(event),
             );
 

@@ -24,10 +24,9 @@ from ibapi.common import MarketDataTypeEnum
 # fmt: off
 from nautilus_trader.adapters.interactive_brokers.client import InteractiveBrokersClient
 from nautilus_trader.adapters.interactive_brokers.common import IBContract
+from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersInstrumentProviderConfig
 from nautilus_trader.adapters.interactive_brokers.parsing.instruments import ib_contract_to_instrument_id
-from nautilus_trader.adapters.interactive_brokers.parsing.instruments import instrument_id_to_ib_contract
 from nautilus_trader.adapters.interactive_brokers.providers import InteractiveBrokersInstrumentProvider
-from nautilus_trader.adapters.interactive_brokers.providers import InteractiveBrokersInstrumentProviderConfig
 
 # fmt: on
 from nautilus_trader.cache.cache import Cache
@@ -96,9 +95,9 @@ class HistoricInteractiveBrokersClient:
 
     async def request_instruments(
         self,
-        instrument_provider_config: InteractiveBrokersInstrumentProviderConfig | None = None,
-        contracts: list[IBContract] | None = None,
         instrument_ids: list[str] | None = None,
+        contracts: list[IBContract] | None = None,
+        instrument_provider_config: InteractiveBrokersInstrumentProviderConfig | None = None,
     ) -> list[Instrument]:
         """
         Return Instruments given either a InteractiveBrokersInstrumentProviderConfig or
@@ -106,35 +105,30 @@ class HistoricInteractiveBrokersClient:
 
         Parameters
         ----------
-        instrument_provider_config : InteractiveBrokersInstrumentProviderConfig
-            An instrument provider config defining which instruments to retrieve.
-        contracts : list[IBContract], default 'None'
-            IBContracts defining which instruments to retrieve.
         instrument_ids : list[str], default 'None'
             Instrument IDs (e.g. AAPL.NASDAQ) defining which instruments to retrieve.
+        contracts : list[IBContract], default 'None'
+            IBContracts defining which instruments to retrieve.
+        instrument_provider_config : InteractiveBrokersInstrumentProviderConfig
+            An instrument provider config defining which instruments to retrieve.
 
         Returns
         -------
         list[Instrument]
 
         """
-        if instrument_provider_config and (contracts or instrument_ids):
-            raise ValueError(
-                "Either instrument_provider_config or ib_contracts/instrument_ids should be provided, not both.",
-            )
         if instrument_provider_config is None:
-            instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
-                load_contracts=frozenset(contracts) if contracts else None,
-                load_ids=frozenset(instrument_ids) if instrument_ids else None,
-            )
-        provider = InteractiveBrokersInstrumentProvider(
+            instrument_provider_config = InteractiveBrokersInstrumentProviderConfig()
+
+        instrument_provider = InteractiveBrokersInstrumentProvider(
             self._client,
             instrument_provider_config,
         )
-        await provider.load_all_async()
-        return list(provider._instruments.values())
+        await instrument_provider.load_ids_async((instrument_ids or []) + (contracts or []))
 
-    async def _prepare_request_bars_parameters(
+        return list(instrument_provider._instruments.values())
+
+    async def request_bars(  # noqa C901
         self,
         bar_specifications: list[str],
         end_date_time: datetime.datetime,
@@ -143,57 +137,7 @@ class HistoricInteractiveBrokersClient:
         duration: str | None = None,
         contracts: list[IBContract] | None = None,
         instrument_ids: list[str] | None = None,
-        use_rth: bool = True,
-    ) -> tuple[list[IBContract], datetime.datetime, datetime.datetime]:
-        """
-        Prepare and validate parameters for requesting bars.
-
-        Returns a tuple of (contracts, start_date_time, end_date_time).
-
-        """
-        # Perform all necessary validations
-        if start_date_time and duration:
-            raise ValueError("Either start_date_time or duration should be provided, not both.")
-
-        # Adjust start and end time based on the timezone
-        if start_date_time:
-            start_date_time = pd.Timestamp(start_date_time, tz=tz_name).tz_convert("UTC")
-        end_date_time = pd.Timestamp(end_date_time, tz=tz_name).tz_convert("UTC")
-
-        if start_date_time and start_date_time >= end_date_time:
-            raise ValueError("Start date must be before end date.")
-
-        if duration:
-            pattern = r"^\d+\s[SDWMY]$"
-            if not re.match(pattern, duration):
-                raise ValueError("duration must be in format: 'int S|D|W|M|Y'")
-
-        # Prepare contracts and instrument_ids
-        contracts = contracts or []
-        instrument_ids = instrument_ids or []
-        if not contracts and not instrument_ids:
-            raise ValueError("Either contracts or instrument_ids must be provided")
-
-        contracts.extend(
-            [
-                instrument_id_to_ib_contract(
-                    InstrumentId.from_str(instrument_id),
-                )
-                for instrument_id in instrument_ids
-            ],
-        )
-
-        return contracts, start_date_time, end_date_time
-
-    async def request_bars(
-        self,
-        bar_specifications: list[str],
-        end_date_time: datetime.datetime,
-        tz_name: str,
-        start_date_time: datetime.datetime | None = None,
-        duration: str | None = None,
-        contracts: list[IBContract] | None = None,
-        instrument_ids: list[str] | None = None,
+        instrument_provider_config: InteractiveBrokersInstrumentProviderConfig | None = None,
         use_rth: bool = True,
         timeout: int = 120,
     ) -> list[Bar]:
@@ -210,6 +154,7 @@ class HistoricInteractiveBrokersClient:
             The start date time for the bars. If provided, duration is derived.
         end_date_time : datetime.datetime
             The end date time for the bars.
+            Note that for continuous futures (CONTFUT), the downloaded data is always up to now.
         tz_name : str
             The timezone to use. (e.g. 'America/New_York', 'UTC')
         duration : str
@@ -220,6 +165,8 @@ class HistoricInteractiveBrokersClient:
             IBContracts defining which bars to retrieve.
         instrument_ids : list[str], default 'None'
             Instrument IDs (e.g. AAPL.NASDAQ) defining which bars to retrieve.
+        instrument_provider_config : InteractiveBrokersInstrumentProviderConfig, optional
+            Configuration for the instrument provider to determine venues and handle symbology.
         use_rth : bool, default 'True'
             Whether to use regular trading hours.
         timeout : int, default 120
@@ -230,25 +177,63 @@ class HistoricInteractiveBrokersClient:
         list[Bar]
 
         """
-        contracts, start_date_time, end_date_time = await self._prepare_request_bars_parameters(
-            bar_specifications,
-            end_date_time,
-            tz_name,
-            start_date_time,
-            duration,
-            contracts,
-            instrument_ids,
-            use_rth,
+        # Perform all necessary validations (merged from _prepare_request_bars_parameters)
+        if start_date_time and duration:
+            raise ValueError("Either start_date_time or duration should be provided, not both.")
+
+        # Adjust start and end time based on the timezone
+        if start_date_time:
+            start_date_time = pd.Timestamp(start_date_time, tz=tz_name).tz_convert("UTC")
+
+        end_date_time = pd.Timestamp(end_date_time, tz=tz_name).tz_convert("UTC")
+
+        if start_date_time and start_date_time >= end_date_time:
+            raise ValueError("Start date must be before end date.")
+
+        if duration:
+            pattern = r"^\d+\s[SDWMY]$"
+
+            if not re.match(pattern, duration):
+                raise ValueError("duration must be in format: 'int S|D|W|M|Y'")
+
+        # Prepare contracts and instrument_ids
+        contracts = contracts or []
+        instrument_ids = instrument_ids or []
+
+        if not contracts and not instrument_ids:
+            raise ValueError("Either contracts or instrument_ids must be provided")
+
+        # Create instrument provider with provided config or default
+        if instrument_provider_config is None:
+            instrument_provider_config = InteractiveBrokersInstrumentProviderConfig()
+
+        instrument_provider = InteractiveBrokersInstrumentProvider(
+            self._client,
+            instrument_provider_config,
+        )
+
+        # Convert instrument_id strings to IBContracts
+        contracts.extend(
+            [
+                await instrument_provider.instrument_id_to_ib_contract(
+                    InstrumentId.from_str(instrument_id),
+                )
+                for instrument_id in instrument_ids
+            ],
         )
 
         # Ensure instruments are fetched and cached
-        await self._fetch_instruments_if_not_cached(contracts)
-
+        await self._fetch_instruments_if_not_cached(contracts, instrument_provider_config)
         data: list[Bar] = []
 
         for contract in contracts:
             for bar_spec in bar_specifications:
-                instrument_id = ib_contract_to_instrument_id(contract)
+                venue = instrument_provider.determine_venue_from_contract(contract)
+                instrument_id = ib_contract_to_instrument_id(
+                    contract,
+                    venue,
+                    instrument_provider_config.symbology_method,
+                )
                 bar_type = BarType(
                     instrument_id,
                     BarSpecification.from_str(bar_spec),
@@ -264,7 +249,6 @@ class HistoricInteractiveBrokersClient:
                         f"{instrument_id}: Requesting historical bars: {bar_type} ending on '{segment_end_date_time}' "
                         f"with duration '{segment_duration}'",
                     )
-
                     bars = await self._client.get_historical_bars(
                         bar_type,
                         contract,
@@ -273,6 +257,7 @@ class HistoricInteractiveBrokersClient:
                         segment_duration,
                         timeout=timeout,
                     )
+
                     if bars:
                         self.log.info(
                             f"{instrument_id}: Number of bars retrieved in batch: {len(bars)}",
@@ -292,6 +277,7 @@ class HistoricInteractiveBrokersClient:
         tz_name: str,
         contracts: list[IBContract] | None = None,
         instrument_ids: list[str] | None = None,
+        instrument_provider_config: InteractiveBrokersInstrumentProviderConfig | None = None,
         use_rth: bool = True,
         timeout: int = 60,
     ) -> list[TradeTick | QuoteTick]:
@@ -313,6 +299,8 @@ class HistoricInteractiveBrokersClient:
             IBContracts defining which ticks to retrieve.
         instrument_ids : list[str], default 'None'
             Instrument IDs (e.g. AAPL.NASDAQ) defining which ticks to retrieve.
+        instrument_provider_config : InteractiveBrokersInstrumentProviderConfig, optional
+            Configuration for the instrument provider to determine venues and handle symbology.
         use_rth : bool, default 'True'
             Whether to use regular trading hours.
         timeout : int, default 60
@@ -327,10 +315,13 @@ class HistoricInteractiveBrokersClient:
             raise ValueError(
                 "tick_type must be one of: 'TRADES' (for TradeTicks), 'BID_ASK' (for QuoteTicks)",
             )
+
         if start_date_time >= end_date_time:
             raise ValueError("Start date must be before end date.")
+
         start_date_time = pd.Timestamp(start_date_time, tz=tz_name).tz_convert("UTC")
         end_date_time = pd.Timestamp(end_date_time, tz=tz_name).tz_convert("UTC")
+
         if (end_date_time - start_date_time) > pd.Timedelta(days=1):
             self.log.warning(
                 "Requesting tick data for more than 1 day may take a long time, particularly for liquid instruments. "
@@ -339,13 +330,22 @@ class HistoricInteractiveBrokersClient:
 
         contracts = contracts or []
         instrument_ids = instrument_ids or []
+
         if not contracts and not instrument_ids:
             raise ValueError("Either contracts or instrument_ids must be provided")
+
+        if instrument_provider_config is None:
+            instrument_provider_config = InteractiveBrokersInstrumentProviderConfig()
+
+        instrument_provider = InteractiveBrokersInstrumentProvider(
+            self._client,
+            instrument_provider_config,
+        )
 
         # Convert instrument_id strings to IBContracts
         contracts.extend(
             [
-                instrument_id_to_ib_contract(
+                await instrument_provider.instrument_id_to_ib_contract(
                     InstrumentId.from_str(instrument_id),
                 )
                 for instrument_id in instrument_ids
@@ -353,18 +353,24 @@ class HistoricInteractiveBrokersClient:
         )
 
         # Ensure instruments are fetched and cached
-        await self._fetch_instruments_if_not_cached(contracts)
-
+        await self._fetch_instruments_if_not_cached(contracts, instrument_provider_config)
         data: list[TradeTick | QuoteTick] = []
+
         for contract in contracts:
-            instrument_id = ib_contract_to_instrument_id(contract)
+            venue = instrument_provider.determine_venue_from_contract(contract)
+            instrument_id = ib_contract_to_instrument_id(
+                contract,
+                venue,
+                instrument_provider_config.symbology_method,
+            )
             current_start_date_time = start_date_time
+
             while True:
                 self.log.info(
                     f"{instrument_id}: Requesting {tick_type} ticks from {current_start_date_time}",
                 )
-
                 ticks: list[TradeTick | QuoteTick] = await self._client.get_historical_ticks(
+                    instrument_id=instrument_id,
                     contract=contract,
                     tick_type=tick_type,
                     start_date_time=current_start_date_time,
@@ -427,16 +433,22 @@ class HistoricInteractiveBrokersClient:
         min_timestamp = min(timestamps)
         max_timestamp = max(timestamps)
 
-        if min_timestamp.floor("S") == max_timestamp.floor("S"):
-            max_timestamp = max_timestamp.floor("S") + pd.Timedelta(seconds=1)
+        if min_timestamp.floor("s") == max_timestamp.floor("s"):
+            max_timestamp = max_timestamp.floor("s") + pd.Timedelta(seconds=1)
+
         if len(ticks) <= 50:
-            max_timestamp = max_timestamp.floor("S") + pd.Timedelta(minutes=1)
+            max_timestamp = max_timestamp.floor("s") + pd.Timedelta(minutes=1)
+
         if max_timestamp >= end_date_time:
             return None, False
 
         return max_timestamp, True
 
-    async def _fetch_instruments_if_not_cached(self, contracts: list[IBContract]) -> None:
+    async def _fetch_instruments_if_not_cached(
+        self,
+        contracts: list[IBContract],
+        instrument_provider_config: InteractiveBrokersInstrumentProviderConfig,
+    ) -> None:
         """
         Fetch and cache Instruments for the given IBContracts if they are not already
         cached.
@@ -445,17 +457,34 @@ class HistoricInteractiveBrokersClient:
         ----------
         contracts : list[IBContract]
             A list of IBContracts to fetch Instruments for.
+        instrument_provider_config : InteractiveBrokersInstrumentProviderConfig
+            Configuration for the instrument provider to determine venues and handle symbology.
 
         Returns
         -------
         None
 
         """
+        # Create instrument provider to use its venue determination logic
+        instrument_provider = InteractiveBrokersInstrumentProvider(
+            self._client,
+            instrument_provider_config,
+        )
+
         for contract in contracts:
-            instrument_id = ib_contract_to_instrument_id(contract)
+            venue = instrument_provider.determine_venue_from_contract(contract)
+            instrument_id = ib_contract_to_instrument_id(
+                contract,
+                venue,
+                instrument_provider_config.symbology_method,
+            )
+
             if not self._client._cache.instrument(instrument_id):
                 self.log.info(f"Fetching Instrument for: {instrument_id}")
-                await self.request_instruments(contracts=[contract])
+                await self.request_instruments(
+                    instrument_provider_config=instrument_provider_config,
+                    contracts=[contract],
+                )
 
     def _calculate_duration_segments(
         self,
@@ -528,6 +557,7 @@ class HistoricInteractiveBrokersClient:
         )
 
         results = []
+
         if years:
             results.append((end_date, f"{years} Y"))
 

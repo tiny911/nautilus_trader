@@ -17,8 +17,10 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
+use anyhow::Context;
 use arrow::array::RecordBatch;
 use chrono::{DateTime, Duration, NaiveDate};
 use futures_util::{StreamExt, future::join_all, pin_mut};
@@ -31,13 +33,11 @@ use nautilus_model::{
     },
     identifiers::InstrumentId,
 };
-use nautilus_serialization::{
-    arrow::{
-        bars_to_arrow_record_batch_bytes, book_deltas_to_arrow_record_batch_bytes,
-        book_depth10_to_arrow_record_batch_bytes, quotes_to_arrow_record_batch_bytes,
-        trades_to_arrow_record_batch_bytes,
-    },
-    parquet::write_batch_to_parquet,
+use nautilus_persistence::parquet::write_batch_to_parquet;
+use nautilus_serialization::arrow::{
+    bars_to_arrow_record_batch_bytes, book_deltas_to_arrow_record_batch_bytes,
+    book_depth10_to_arrow_record_batch_bytes, quotes_to_arrow_record_batch_bytes,
+    trades_to_arrow_record_batch_bytes,
 };
 use thousands::Separable;
 use ustr::Ustr;
@@ -49,6 +49,20 @@ use crate::{
     machine::{TardisMachineClient, types::InstrumentMiniInfo},
     parse::{normalize_instrument_id, parse_instrument_id},
 };
+
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+/// Retrieves a reference to a globally shared Tokio runtime.
+/// The runtime is lazily initialized on the first call and reused thereafter.
+///
+/// # Panics
+///
+/// Panics if the runtime could not be created, which typically indicates
+/// an inability to spawn threads or allocate necessary resources.
+pub fn get_runtime() -> &'static tokio::runtime::Runtime {
+    RUNTIME
+        .get_or_init(|| tokio::runtime::Runtime::new().expect("Failed to initialize tokio runtime"))
+}
 
 struct DateCursor {
     /// Cursor date UTC.
@@ -102,13 +116,26 @@ async fn gather_instruments_info(
     results.into_iter().collect()
 }
 
+/// Run the Tardis Machine replay from a JSON configuration file.
+///
+/// # Errors
+///
+/// Returns an error if reading or parsing the config file fails,
+/// or if any downstream replay operation fails.
+/// Run the Tardis Machine replay from a JSON configuration file.
+///
+/// # Panics
+///
+/// Panics if unable to determine the output path (current directory fallback fails).
 pub async fn run_tardis_machine_replay_from_config(config_filepath: &Path) -> anyhow::Result<()> {
     tracing::info!("Starting replay");
     tracing::info!("Config filepath: {config_filepath:?}");
 
-    let config_data = fs::read_to_string(config_filepath).expect("Failed to read config file");
-    let config: TardisReplayConfig =
-        serde_json::from_str(&config_data).expect("Failed to parse config JSON");
+    // Load and parse the replay configuration
+    let config_data = fs::read_to_string(config_filepath)
+        .with_context(|| format!("Failed to read config file: {config_filepath:?}"))?;
+    let config: TardisReplayConfig = serde_json::from_str(&config_data)
+        .context("Failed to parse config JSON into TardisReplayConfig")?;
 
     let path = config
         .output_path
@@ -417,7 +444,16 @@ fn batch_and_write_bars(bars: Vec<Bar>, bar_type: &BarType, date: NaiveDate, pat
     };
 
     let filepath = path.join(parquet_filepath_bars(bar_type, date));
-    match write_batch_to_parquet(batch, &filepath, None, None, None) {
+    let filepath_str = filepath.to_string_lossy();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    match rt.block_on(write_batch_to_parquet(
+        batch,
+        &filepath_str,
+        None,
+        None,
+        None,
+    )) {
         Ok(()) => tracing::info!("File written: {filepath:?}"),
         Err(e) => tracing::error!("Error writing {filepath:?}: {e:?}"),
     }
@@ -450,7 +486,16 @@ fn write_batch(
     path: &Path,
 ) {
     let filepath = path.join(parquet_filepath(typename, instrument_id, date));
-    match write_batch_to_parquet(batch, &filepath, None, None, None) {
+    let filepath_str = filepath.to_string_lossy();
+
+    let rt = get_runtime();
+    match rt.block_on(write_batch_to_parquet(
+        batch,
+        &filepath_str,
+        None,
+        None,
+        None,
+    )) {
         Ok(()) => tracing::info!("File written: {filepath:?}"),
         Err(e) => tracing::error!("Error writing {filepath:?}: {e:?}"),
     }

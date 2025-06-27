@@ -156,6 +156,14 @@ fn create_csv_reader<P: AsRef<Path>>(
 
 /// Loads [`OrderBookDelta`]s from a Tardis format CSV at the given `filepath`,
 /// automatically applying `GZip` decompression for files ending in ".gz".
+/// Load order book delta records from a CSV or gzipped CSV file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened, read, or parsed as CSV.
+/// # Panics
+///
+/// Panics if a CSV record has a zero size for a non-delete action or if data conversion fails.
 pub fn load_deltas<P: AsRef<Path>>(
     filepath: P,
     price_precision: Option<u8>,
@@ -231,11 +239,11 @@ pub fn load_deltas<P: AsRef<Path>>(
         let ts_init = parse_timestamp(record.local_timestamp);
 
         // Check if timestamp is different from last timestamp
-        if last_ts_event != ts_event {
-            if let Some(last_delta) = deltas.last_mut() {
-                // Set previous delta flags as F_LAST
-                last_delta.flags = RecordFlag::F_LAST.value();
-            }
+        if last_ts_event != ts_event
+            && let Some(last_delta) = deltas.last_mut()
+        {
+            // Set previous delta flags as F_LAST
+            last_delta.flags = RecordFlag::F_LAST.value();
         }
 
         assert!(
@@ -257,10 +265,10 @@ pub fn load_deltas<P: AsRef<Path>>(
 
         deltas.push(delta);
 
-        if let Some(limit) = limit {
-            if deltas.len() >= limit {
-                break;
-            }
+        if let Some(limit) = limit
+            && deltas.len() >= limit
+        {
+            break;
         }
     }
 
@@ -295,6 +303,14 @@ fn create_book_order(
 
 /// Loads [`OrderBookDepth10`]s from a Tardis format CSV at the given `filepath`,
 /// automatically applying `GZip` decompression for files ending in ".gz".
+/// Load order book depth-10 snapshots (5-level) from a CSV or gzipped CSV file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened, read, or parsed as CSV.
+/// # Panics
+///
+/// Panics if a record level cannot be parsed to depth-10.
 pub fn load_depth10_from_snapshot5<P: AsRef<Path>>(
     filepath: P,
     price_precision: Option<u8>,
@@ -316,16 +332,16 @@ pub fn load_depth10_from_snapshot5<P: AsRef<Path>>(
             while reader.read_record(&mut record)? {
                 let parsed: TardisOrderBookSnapshot5Record = record.deserialize(None)?;
 
-                if price_precision.is_none() {
-                    if let Some(bid_price) = parsed.bids_0_price {
-                        max_price_precision = infer_precision(bid_price).max(max_price_precision);
-                    }
+                if price_precision.is_none()
+                    && let Some(bid_price) = parsed.bids_0_price
+                {
+                    max_price_precision = infer_precision(bid_price).max(max_price_precision);
                 }
 
-                if size_precision.is_none() {
-                    if let Some(bid_amount) = parsed.bids_0_amount {
-                        max_size_precision = infer_precision(bid_amount).max(max_size_precision);
-                    }
+                if size_precision.is_none()
+                    && let Some(bid_amount) = parsed.bids_0_amount
+                {
+                    max_size_precision = infer_precision(bid_amount).max(max_size_precision);
                 }
 
                 if let Some(limit) = limit {
@@ -435,10 +451,10 @@ pub fn load_depth10_from_snapshot5<P: AsRef<Path>>(
 
         depths.push(depth);
 
-        if let Some(limit) = limit {
-            if depths.len() >= limit {
-                break;
-            }
+        if let Some(limit) = limit
+            && depths.len() >= limit
+        {
+            break;
         }
     }
 
@@ -447,6 +463,14 @@ pub fn load_depth10_from_snapshot5<P: AsRef<Path>>(
 
 /// Loads [`OrderBookDepth10`]s from a Tardis format CSV at the given `filepath`,
 /// automatically applying `GZip` decompression for files ending in ".gz".
+/// Load order book depth-10 snapshots (25-level) from a CSV or gzipped CSV file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened, read, or parsed as CSV.
+/// # Panics
+///
+/// Panics if a record level cannot be parsed to depth-10.
 pub fn load_depth10_from_snapshot25<P: AsRef<Path>>(
     filepath: P,
     price_precision: Option<u8>,
@@ -468,16 +492,16 @@ pub fn load_depth10_from_snapshot25<P: AsRef<Path>>(
             while reader.read_record(&mut record)? {
                 let parsed: TardisOrderBookSnapshot25Record = record.deserialize(None)?;
 
-                if price_precision.is_none() {
-                    if let Some(bid_price) = parsed.bids_0_price {
-                        max_price_precision = infer_precision(bid_price).max(max_price_precision);
-                    }
+                if price_precision.is_none()
+                    && let Some(bid_price) = parsed.bids_0_price
+                {
+                    max_price_precision = infer_precision(bid_price).max(max_price_precision);
                 }
 
-                if size_precision.is_none() {
-                    if let Some(bid_amount) = parsed.bids_0_amount {
-                        max_size_precision = infer_precision(bid_amount).max(max_size_precision);
-                    }
+                if size_precision.is_none()
+                    && let Some(bid_amount) = parsed.bids_0_amount
+                {
+                    max_size_precision = infer_precision(bid_amount).max(max_size_precision);
                 }
 
                 if let Some(limit) = limit {
@@ -609,10 +633,10 @@ pub fn load_depth10_from_snapshot25<P: AsRef<Path>>(
 
         depths.push(depth);
 
-        if let Some(limit) = limit {
-            if depths.len() >= limit {
-                break;
-            }
+        if let Some(limit) = limit
+            && depths.len() >= limit
+        {
+            break;
         }
     }
 
@@ -621,6 +645,14 @@ pub fn load_depth10_from_snapshot25<P: AsRef<Path>>(
 
 /// Loads [`QuoteTick`]s from a Tardis format CSV at the given `filepath`,
 /// automatically applying `GZip` decompression for files ending in ".gz".
+/// Load quote ticks from a CSV or gzipped CSV file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened, read, or parsed as CSV.
+/// # Panics
+///
+/// Panics if a record has invalid data or CSV parsing errors.
 pub fn load_quote_ticks<P: AsRef<Path>>(
     filepath: P,
     price_precision: Option<u8>,
@@ -642,16 +674,16 @@ pub fn load_quote_ticks<P: AsRef<Path>>(
             while reader.read_record(&mut record)? {
                 let parsed: TardisQuoteRecord = record.deserialize(None)?;
 
-                if price_precision.is_none() {
-                    if let Some(bid_price) = parsed.bid_price {
-                        max_price_precision = infer_precision(bid_price).max(max_price_precision);
-                    }
+                if price_precision.is_none()
+                    && let Some(bid_price) = parsed.bid_price
+                {
+                    max_price_precision = infer_precision(bid_price).max(max_price_precision);
                 }
 
-                if size_precision.is_none() {
-                    if let Some(bid_amount) = parsed.bid_amount {
-                        max_size_precision = infer_precision(bid_amount).max(max_size_precision);
-                    }
+                if size_precision.is_none()
+                    && let Some(bid_amount) = parsed.bid_amount
+                {
+                    max_size_precision = infer_precision(bid_amount).max(max_size_precision);
                 }
 
                 if let Some(limit) = limit {
@@ -704,10 +736,10 @@ pub fn load_quote_ticks<P: AsRef<Path>>(
 
         quotes.push(quote);
 
-        if let Some(limit) = limit {
-            if quotes.len() >= limit {
-                break;
-            }
+        if let Some(limit) = limit
+            && quotes.len() >= limit
+        {
+            break;
         }
     }
 
@@ -716,6 +748,14 @@ pub fn load_quote_ticks<P: AsRef<Path>>(
 
 /// Loads [`TradeTick`]s from a Tardis format CSV at the given `filepath`,
 /// automatically applying `GZip` decompression for files ending in ".gz".
+/// Load trade ticks from a CSV or gzipped CSV file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened, read, or parsed as CSV.
+/// # Panics
+///
+/// Panics if a record has invalid trade size or CSV parsing errors.
 pub fn load_trade_ticks<P: AsRef<Path>>(
     filepath: P,
     price_precision: Option<u8>,
@@ -796,10 +836,10 @@ pub fn load_trade_ticks<P: AsRef<Path>>(
 
         trades.push(trade);
 
-        if let Some(limit) = limit {
-            if trades.len() >= limit {
-                break;
-            }
+        if let Some(limit) = limit
+            && trades.len() >= limit
+        {
+            break;
         }
     }
 
@@ -825,8 +865,8 @@ mod tests {
 
     use super::*;
 
-    // TODO: Flakey in CI, potentially to do with syncing large test data files from cache
-    #[ignore = "Flakey test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
+    // TODO: Flaky in CI, potentially from syncing large test data files from cache
+    #[ignore = "Flaky test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
     #[rstest]
     #[case(Some(1), Some(0))] // Explicit precisions
     #[case(None, None)] // Inferred precisions
@@ -859,8 +899,8 @@ mod tests {
         assert_eq!(deltas[0].ts_init, 1585699200355684000);
     }
 
-    // TODO: Flakey in CI, potentially to do with syncing large test data files from cache
-    #[ignore = "Flakey test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
+    // TODO: Flaky in CI, potentially from syncing large test data files from cache
+    #[ignore = "Flaky test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
     #[rstest]
     #[case(Some(2), Some(3))] // Explicit precisions
     #[case(None, None)] // Inferred precisions
@@ -901,8 +941,8 @@ mod tests {
         assert_eq!(depths[0].sequence, 0);
     }
 
-    // TODO: Flakey in CI, potentially to do with syncing large test data files from cache
-    #[ignore = "Flakey test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
+    // TODO: Flaky in CI, potentially from syncing large test data files from cache
+    #[ignore = "Flaky test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
     #[rstest]
     #[case(Some(2), Some(3))] // Explicit precisions
     #[case(None, None)] // Inferred precisions
@@ -943,8 +983,8 @@ mod tests {
         assert_eq!(depths[0].sequence, 0);
     }
 
-    // TODO: Flakey in CI, potentially to do with syncing large test data files from cache
-    #[ignore = "Flakey test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
+    // TODO: Flaky in CI, potentially from syncing large test data files from cache
+    #[ignore = "Flaky test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
     #[rstest]
     #[case(Some(1), Some(0))] // Explicit precisions
     #[case(None, None)] // Inferred precisions
@@ -975,8 +1015,8 @@ mod tests {
         assert_eq!(quotes[0].ts_init, 1588291201234268000);
     }
 
-    // TODO: Flakey in CI, potentially to do with syncing large test data files from cache
-    #[ignore = "Flakey test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
+    // TODO: Flaky in CI, potentially from syncing large test data files from cache
+    #[ignore = "Flaky test: called `Result::unwrap()` on an `Err` value: Error(Io(Kind(UnexpectedEof)))"]
     #[rstest]
     #[case(Some(1), Some(0))] // Explicit precisions
     #[case(None, None)] // Inferred precisions

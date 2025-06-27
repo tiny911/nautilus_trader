@@ -48,15 +48,15 @@ impl DataBackendSession {
     /// Query a file for its records. the caller must specify `T` to indicate
     /// the kind of data expected from this query.
     ///
-    /// table_name: Logical table_name assigned to this file. Queries to this file should address the
+    /// `table_name`: Logical `table_name` assigned to this file. Queries to this file should address the
     /// file by its table name.
-    /// file_path: Path to file
-    /// sql_query: A custom sql query to retrieve records from file. If no query is provided a default
-    /// query "SELECT * FROM <table_name>" is run.
+    /// `file_path`: Path to file
+    /// `sql_query`: A custom sql query to retrieve records from file. If no query is provided a default
+    /// query "SELECT * FROM <`table_name`>" is run.
     ///
     /// # Safety
     ///
-    /// The file data must be ordered by the ts_init in ascending order for this
+    /// The file data must be ordered by the `ts_init` in ascending order for this
     /// to work correctly.
     #[pyo3(name = "add_file")]
     #[pyo3(signature = (data_type, table_name, file_path, sql_query=None))]
@@ -94,6 +94,18 @@ impl DataBackendSession {
     fn to_query_result(mut slf: PyRefMut<'_, Self>) -> DataQueryResult {
         let query_result = slf.get_query_result();
         DataQueryResult::new(query_result, slf.chunk_size)
+    }
+
+    /// Register an object store with the session context from a URI with optional storage options
+    #[pyo3(name = "register_object_store_from_uri")]
+    #[pyo3(signature = (uri, storage_options=None))]
+    fn register_object_store_from_uri_py(
+        mut slf: PyRefMut<'_, Self>,
+        uri: &str,
+        storage_options: Option<std::collections::HashMap<String, String>>,
+    ) -> PyResult<()> {
+        slf.register_object_store_from_uri(uri, storage_options)
+            .map_err(to_pyruntime_err)
     }
 }
 

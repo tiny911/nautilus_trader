@@ -22,13 +22,16 @@ use nautilus_model::defi::{
 
 use crate::exchanges::extended::DexExtended;
 
-/// Uniswap V2 DEX on Base
+/// Uniswap V2 DEX on Base.
 pub static UNISWAP_V2: LazyLock<DexExtended> = LazyLock::new(|| {
     let dex = Dex::new(
         chains::BASE.clone(),
         "Uniswap V2",
         "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6",
         AmmType::CPAMM,
+        "",
+        "",
+        "",
         "",
     );
     DexExtended::new(dex)

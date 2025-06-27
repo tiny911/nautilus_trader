@@ -32,7 +32,6 @@ use nautilus_data::{
 };
 use nautilus_model::identifiers::Venue;
 use tokio_stream::StreamExt;
-use ustr::Ustr;
 
 pub mod big_brain_actor;
 pub mod data_client;
@@ -49,7 +48,7 @@ pub async fn init_data_engine(
     let (client, http_stream, websocket_stream) =
         MockDataClient::start(http_address, websocket_address).await;
     let client: Box<dyn DataClient> = Box::new(client);
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(LiveClock::new()));
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(LiveClock::default()));
 
     let adapter = DataClientAdapter::new(
         client.client_id(),
@@ -91,6 +90,8 @@ impl LiveRunner {
     }
 
     pub async fn run(&mut self) {
+        let endpoint = "negative_stream".into();
+
         loop {
             // TODO: push decoding logic into data client
             tokio::select! {
@@ -103,7 +104,7 @@ impl LiveRunner {
                 }
                 message = self.message_stream.next() => {
                     if let Some(message) = message {
-                        msgbus::send(&Ustr::from("negative_stream"), &message);
+                        msgbus::send_any(endpoint, &message);
                     }
                 }
             }

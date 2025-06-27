@@ -22,13 +22,16 @@ use nautilus_model::defi::{
 
 use crate::exchanges::extended::DexExtended;
 
-/// Aerodrome Slipstream DEX on Base
+/// Aerodrome Slipstream DEX on Base.
 pub static AERODROME_SLIPSTREAM: LazyLock<DexExtended> = LazyLock::new(|| {
     let dex = Dex::new(
         chains::BASE.clone(),
         "Aerodrome Slipstream",
         "0x420DD381b31aEf6683db6B902084cB0FFECe40Da",
         AmmType::StableSwap,
+        "",
+        "",
+        "",
         "",
     );
     DexExtended::new(dex)

@@ -37,9 +37,8 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny},
     types::{Currency, Money},
 };
-use nautilus_system::kernel::NautilusKernel;
+use nautilus_system::{config::NautilusKernelConfig, kernel::NautilusKernel};
 use rust_decimal::Decimal;
-use ustr::Ustr;
 
 use crate::{
     accumulator::TimeEventAccumulator, config::BacktestEngineConfig,
@@ -47,6 +46,18 @@ use crate::{
     execution_client::BacktestExecutionClient, modules::SimulationModule,
 };
 
+/// Core backtesting engine for running event-driven strategy backtests on historical data.
+///
+/// The `BacktestEngine` provides a high-fidelity simulation environment that processes
+/// historical market data chronologically through an event-driven architecture. It maintains
+/// simulated exchanges with realistic order matching and execution, allowing strategies
+/// to be tested exactly as they would run in live trading:
+///
+/// - Event-driven data replay with configurable latency models.
+/// - Multi-venue and multi-asset support.
+/// - Realistic order matching and execution simulation.
+/// - Strategy and portfolio performance analysis.
+/// - Seamless transition from backtesting to live trading.
 pub struct BacktestEngine {
     instance_id: UUID4,
     config: BacktestEngineConfig,
@@ -77,10 +88,15 @@ impl Debug for BacktestEngine {
 }
 
 impl BacktestEngine {
-    #[must_use]
-    pub fn new(config: BacktestEngineConfig) -> Self {
-        let kernel = NautilusKernel::new(Ustr::from("BacktestEngine"), config.kernel.clone());
-        Self {
+    /// Create a new [`BacktestEngine`] instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the core `NautilusKernel` fails to initialize.
+    pub fn new(config: BacktestEngineConfig) -> anyhow::Result<Self> {
+        let kernel = NautilusKernel::new("BacktestEngine".to_string(), config.clone())?;
+
+        Ok(Self {
             instance_id: kernel.instance_id,
             config,
             accumulator: TimeEventAccumulator::new(),
@@ -97,7 +113,7 @@ impl BacktestEngine {
             run_finished: None,
             backtest_start: None,
             backtest_end: None,
-        }
+        })
     }
 
     /// # Errors
@@ -169,7 +185,7 @@ impl BacktestEngine {
 
         let account_id = AccountId::from(format!("{venue}-001").as_str());
         let exec_client = BacktestExecutionClient::new(
-            self.kernel.config.trader_id,
+            self.config.trader_id(),
             account_id,
             exchange.clone(),
             self.kernel.cache.clone(),
@@ -229,7 +245,10 @@ impl BacktestEngine {
         // Check client has been registered
         self.add_market_data_client_if_not_exists(instrument.id().venue);
 
-        self.kernel.data_engine.process(&instrument as &dyn Any);
+        self.kernel
+            .data_engine
+            .borrow_mut()
+            .process(&instrument as &dyn Any);
         log::info!(
             "Added instrument {} to exchange {}",
             instrument_id,
@@ -338,6 +357,7 @@ impl BacktestEngine {
         if !self
             .kernel
             .data_engine
+            .borrow()
             .registered_clients()
             .contains(&client_id)
         {
@@ -352,6 +372,7 @@ impl BacktestEngine {
             );
             self.kernel
                 .data_engine
+                .borrow_mut()
                 .register_client(data_client_adapter, None);
         }
     }
@@ -377,7 +398,7 @@ mod tests {
     #[allow(clippy::missing_panics_doc)] // OK for testing
     fn get_backtest_engine(config: Option<BacktestEngineConfig>) -> BacktestEngine {
         let config = config.unwrap_or_default();
-        let mut engine = BacktestEngine::new(config);
+        let mut engine = BacktestEngine::new(config).unwrap();
         engine
             .add_venue(
                 Venue::from("BINANCE"),
@@ -411,6 +432,8 @@ mod tests {
 
     #[rstest]
     fn test_engine_venue_and_instrument_initialization(crypto_perpetual_ethusdt: CryptoPerpetual) {
+        pyo3::prepare_freethreaded_python();
+
         let venue = Venue::from("BINANCE");
         let client_id = ClientId::from(venue.as_str());
         let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt);
@@ -430,11 +453,20 @@ mod tests {
                 .get(&venue)
                 .is_some_and(|venue| venue.borrow().get_matching_engine(&instrument_id).is_some())
         );
-        assert_eq!(engine.kernel.data_engine.registered_clients().len(), 1);
+        assert_eq!(
+            engine
+                .kernel
+                .data_engine
+                .borrow()
+                .registered_clients()
+                .len(),
+            1
+        );
         assert!(
             engine
                 .kernel
                 .data_engine
+                .borrow()
                 .registered_clients()
                 .contains(&client_id)
         );

@@ -26,7 +26,7 @@ use std::{
     rc::Rc,
 };
 
-use nautilus_common::{cache::Cache, clock::Clock};
+use nautilus_common::{cache::Cache, clock::Clock, messages::execution::TradingCommand};
 use nautilus_core::{
     UnixNanos,
     correctness::{FAILED, check_equal},
@@ -34,7 +34,6 @@ use nautilus_core::{
 use nautilus_execution::{
     client::ExecutionClient,
     matching_engine::{config::OrderMatchingEngineConfig, engine::OrderMatchingEngine},
-    messages::TradingCommand,
     models::{fee::FeeModelAny, fill::FillModel, latency::LatencyModel},
 };
 use nautilus_model::{
@@ -90,6 +89,21 @@ impl PartialOrd for InflightCommand {
     }
 }
 
+/// Simulated exchange venue for realistic trading execution during backtesting.
+///
+/// The `SimulatedExchange` provides a comprehensive simulation of a trading venue,
+/// including order matching engines, account management, and realistic execution
+/// models. It maintains order books, processes market data, and executes trades
+/// with configurable latency and fill models to accurately simulate real market
+/// conditions during backtesting.
+///
+/// Key features:
+/// - Multi-instrument order matching with realistic execution
+/// - Configurable fee, fill, and latency models
+/// - Support for various order types and execution options
+/// - Account balance and position management
+/// - Market data processing and order book maintenance
+/// - Simulation modules for custom venue behaviors
 pub struct SimulatedExchange {
     pub id: Venue,
     pub oms_type: OmsType,
@@ -779,19 +793,17 @@ mod tests {
     use nautilus_common::{
         cache::Cache,
         clock::TestClock,
+        messages::execution::{SubmitOrder, TradingCommand},
         msgbus::{
             self,
             stubs::{get_message_saving_handler, get_saved_messages},
         },
     };
     use nautilus_core::{AtomicTime, UUID4, UnixNanos};
-    use nautilus_execution::{
-        messages::{SubmitOrder, TradingCommand},
-        models::{
-            fee::{FeeModelAny, MakerTakerFeeModel},
-            fill::FillModel,
-            latency::LatencyModel,
-        },
+    use nautilus_execution::models::{
+        fee::{FeeModelAny, MakerTakerFeeModel},
+        fill::FillModel,
+        latency::LatencyModel,
     };
     use nautilus_model::{
         accounts::{AccountAny, MarginAccount},
@@ -813,7 +825,6 @@ mod tests {
         types::{AccountBalance, Currency, Money, Price, Quantity},
     };
     use rstest::rstest;
-    use ustr::Ustr;
 
     use crate::{
         exchange::{InflightCommand, SimulatedExchange},
@@ -1263,7 +1274,7 @@ mod tests {
         let account_type = AccountType::Margin;
         let mut cache = Cache::default();
         let handler = get_message_saving_handler::<AccountState>(None);
-        msgbus::register(Ustr::from("Portfolio.update_account"), handler.clone());
+        msgbus::register("Portfolio.update_account".into(), handler.clone());
         let margin_account = MarginAccount::new(
             AccountState::new(
                 AccountId::from("SIM-001"),

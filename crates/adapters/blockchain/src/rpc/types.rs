@@ -13,14 +13,15 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use nautilus_model::defi::block::Block;
+use nautilus_model::defi::{Block, PoolSwap};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
 
-/// Represents normalized blockchain messages
+/// Represents normalized blockchain messages.
 #[derive(Debug, Clone)]
 pub enum BlockchainMessage {
     Block(Block),
+    Swap(PoolSwap),
 }
 
 /// Represents the types of events that can be subscribed to via the blockchain RPC interface.

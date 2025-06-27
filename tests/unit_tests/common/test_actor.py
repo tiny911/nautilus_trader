@@ -1523,7 +1523,7 @@ class TestActor:
         # Assert
         assert self.data_engine.command_count == 0
         assert (
-            actor.msgbus.subscriptions()[5].topic
+            actor.msgbus.subscriptions()[4].topic
             == "data.NewsEvent.type=NEWS_WIRE.topic=Earthquake"
         )
 
@@ -1545,7 +1545,7 @@ class TestActor:
         # Assert
         assert self.data_engine.command_count == 1
         assert (
-            actor.msgbus.subscriptions()[5].topic
+            actor.msgbus.subscriptions()[4].topic
             == "data.NewsEvent.type=NEWS_WIRE.topic=Earthquake"
         )
 
@@ -1567,7 +1567,7 @@ class TestActor:
 
         # Assert
         assert self.data_engine.command_count == 0
-        assert len(actor.msgbus.subscriptions()) == 5  # Portfolio subscriptions only
+        assert len(actor.msgbus.subscriptions()) == 4  # Portfolio subscriptions only
 
     def test_unsubscribe_custom_data_with_client_id(self) -> None:
         # Arrange
@@ -1587,7 +1587,7 @@ class TestActor:
 
         # Assert
         assert self.data_engine.command_count == 2
-        assert len(actor.msgbus.subscriptions()) == 5  # Portfolio subscriptions only
+        assert len(actor.msgbus.subscriptions()) == 4  # Portfolio subscriptions only
 
     def test_subscribe_order_book_deltas(self) -> None:
         # Arrange
@@ -1924,7 +1924,7 @@ class TestActor:
 
         # Assert
         assert self.data_engine.command_count == 0
-        assert actor.msgbus.subscriptions()[5].topic == "data.SignalTest*"
+        assert actor.msgbus.subscriptions()[4].topic == "data.SignalTest*"
 
     def test_subscribe_all_signals(self) -> None:
         # Arrange
@@ -1941,7 +1941,7 @@ class TestActor:
 
         # Assert
         assert self.data_engine.command_count == 0
-        assert actor.msgbus.subscriptions()[5].topic == "data.Signal*"
+        assert actor.msgbus.subscriptions()[4].topic == "data.Signal*"
 
     def test_publish_data_persist(self) -> None:
         # Arrange
@@ -2033,9 +2033,9 @@ class TestActor:
 
         # Assert
         assert self.data_engine.request_count == 1
-        assert actor.has_pending_requests()
-        assert actor.is_pending_request(request_id)
-        assert request_id in actor.pending_requests()
+        assert not actor.has_pending_requests()
+        assert not actor.is_pending_request(request_id)
+        assert request_id not in actor.pending_requests()
 
     def test_request_order_book_snapshots_sends_request_to_data_engine(self) -> None:
         # Arrange
@@ -2065,9 +2065,9 @@ class TestActor:
 
         # Assert
         assert self.data_engine.request_count == 1
-        assert actor.has_pending_requests()
-        assert actor.is_pending_request(request_id)
-        assert request_id in actor.pending_requests()
+        assert not actor.has_pending_requests()
+        assert not actor.is_pending_request(request_id)
+        assert request_id not in actor.pending_requests()
 
     def test_request_quote_ticks_sends_request_to_data_engine(self) -> None:
         # Arrange
@@ -2084,9 +2084,9 @@ class TestActor:
 
         # Assert
         assert self.data_engine.request_count == 1
-        assert actor.has_pending_requests()
-        assert actor.is_pending_request(request_id)
-        assert request_id in actor.pending_requests()
+        assert not actor.has_pending_requests()
+        assert not actor.is_pending_request(request_id)
+        assert request_id not in actor.pending_requests()
 
     def test_request_quote_ticks_with_registered_callback(self) -> None:
         # Arrange
@@ -2138,9 +2138,9 @@ class TestActor:
 
         # Assert
         assert self.data_engine.request_count == 1
-        assert actor.has_pending_requests()
-        assert actor.is_pending_request(request_id)
-        assert request_id in actor.pending_requests()
+        assert not actor.has_pending_requests()
+        assert not actor.is_pending_request(request_id)
+        assert request_id not in actor.pending_requests()
 
     def test_request_trade_ticks_with_registered_callback(self) -> None:
         # Arrange
@@ -2193,9 +2193,9 @@ class TestActor:
 
         # Assert
         assert self.data_engine.request_count == 1
-        assert actor.has_pending_requests()
-        assert actor.is_pending_request(request_id)
-        assert request_id in actor.pending_requests()
+        assert not actor.has_pending_requests()
+        assert not actor.is_pending_request(request_id)
+        assert request_id not in actor.pending_requests()
 
     def test_request_bars_with_registered_callback(self) -> None:
         # Arrange
@@ -2272,7 +2272,6 @@ class TestActor:
     @pytest.mark.parametrize(
         ("start", "stop"),
         [
-            (UNIX_EPOCH, UNIX_EPOCH),
             (UNIX_EPOCH + timedelta(milliseconds=1), UNIX_EPOCH),
         ],
     )

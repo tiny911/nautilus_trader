@@ -14,7 +14,7 @@
 // -------------------------------------------------------------------------------------------------
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nautilus_common::msgbus::{is_matching, is_matching_backtracking};
+use nautilus_common::msgbus::matching::is_matching_backtracking;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use regex::Regex;
 use ustr::Ustr;
@@ -38,26 +38,6 @@ fn create_topics(n: usize, rng: &mut StdRng) -> Vec<Ustr> {
 
 fn bench_matching(c: &mut Criterion) {
     let pattern = "data.*.BINANCE.ETH???";
-    let pattern_ustr = Ustr::from(pattern);
-
-    {
-        let mut rng = StdRng::seed_from_u64(42);
-        let mut custom_group = c.benchmark_group("Custom matching");
-
-        for ele in [1, 10, 100, 1000] {
-            let topics = create_topics(ele, &mut rng);
-
-            custom_group.bench_function(format!("{ele} topics"), |b| {
-                b.iter(|| {
-                    for topic in &topics {
-                        black_box(is_matching(&pattern_ustr, topic));
-                    }
-                });
-            });
-        }
-
-        custom_group.finish();
-    }
 
     {
         let mut rng = StdRng::seed_from_u64(42);
@@ -66,9 +46,11 @@ fn bench_matching(c: &mut Criterion) {
         for ele in [1, 10, 100, 1000] {
             let topics = create_topics(ele, &mut rng);
 
+            // Compile regex once; measure only matching performance
             regex_group.bench_function(format!("{ele} topics"), |b| {
+                let regex = Regex::new(pattern).unwrap();
+
                 b.iter(|| {
-                    let regex = Regex::new(pattern).unwrap();
                     for topic in &topics {
                         black_box(regex.is_match(topic));
                     }
@@ -82,6 +64,7 @@ fn bench_matching(c: &mut Criterion) {
     {
         let mut rng = StdRng::seed_from_u64(42);
         let mut iter_group = c.benchmark_group("Iterative backtracking matching");
+        let pattern = pattern.into();
 
         for ele in [1, 10, 100, 1000] {
             let topics = create_topics(ele, &mut rng);
@@ -89,7 +72,7 @@ fn bench_matching(c: &mut Criterion) {
             iter_group.bench_function(format!("{ele} topics"), |b| {
                 b.iter(|| {
                     for topic in &topics {
-                        black_box(is_matching_backtracking(&pattern_ustr, topic));
+                        black_box(is_matching_backtracking(topic.into(), pattern));
                     }
                 });
             });

@@ -16,9 +16,10 @@
 use alloy::primitives::Address;
 
 /// Represents a liquidity pool creation event from a decentralized exchange.
+///
 // This struct models the data structure of a pool creation event emitted by DEX factory contracts.
 #[derive(Debug, Clone)]
-pub struct PoolCreated {
+pub struct PoolCreatedEvent {
     /// The block number when the pool was created.
     pub block_number: u64,
     /// The blockchain address of the first token in the pair.
@@ -33,8 +34,8 @@ pub struct PoolCreated {
     pub pool_address: Address,
 }
 
-impl PoolCreated {
-    /// Creates a new `PoolCreated` instance with the specified parameters.
+impl PoolCreatedEvent {
+    /// Creates a new [`PoolCreatedEvent`] instance with the specified parameters.
     #[must_use]
     pub const fn new(
         block_number: u64,

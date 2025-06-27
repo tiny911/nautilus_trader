@@ -27,14 +27,20 @@ use crate::rpc::error::BlockchainRpcClientError;
 ///
 /// This client is designed to interact with Ethereum-compatible blockchain networks, providing
 /// methods to execute RPC calls and handle responses in a type-safe manner.
+#[derive(Debug)]
 pub struct BlockchainHttpRpcClient {
     /// The HTTP URL for the blockchain node's RPC endpoint.
     http_rpc_url: String,
-    /// The HTTP client for making RPC http-based requests
+    /// The HTTP client for making RPC http-based requests.
     http_client: HttpClient,
 }
 
 impl BlockchainHttpRpcClient {
+    /// Creates a new HTTP RPC client with the given endpoint URL and optional rate limit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rpc_request_per_second` is `Some(0)`, since a zero rate limit is invalid.
     #[must_use]
     pub fn new(http_rpc_url: String, rpc_request_per_second: Option<u32>) -> Self {
         let default_quota = rpc_request_per_second.map(|rpc_request_per_second| {
@@ -74,6 +80,10 @@ impl BlockchainHttpRpcClient {
     }
 
     /// Executes an Ethereum JSON-RPC call and deserializes the response into the specified type T.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP RPC request fails or the response cannot be parsed.
     pub async fn execute_eth_call<T: DeserializeOwned>(
         &self,
         rpc_request: serde_json::Value,

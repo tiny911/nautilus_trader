@@ -21,15 +21,16 @@
 
 use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
-use nautilus_common::{cache::Cache, clock::Clock};
-use nautilus_core::UnixNanos;
-use nautilus_execution::{
-    client::{ExecutionClient, base::BaseExecutionClient},
-    messages::{
+use nautilus_common::{
+    cache::Cache,
+    clock::Clock,
+    messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, QueryOrder, SubmitOrder,
         SubmitOrderList, TradingCommand,
     },
 };
+use nautilus_core::UnixNanos;
+use nautilus_execution::client::{ExecutionClient, base::BaseExecutionClient};
 use nautilus_model::{
     accounts::AccountAny,
     enums::OmsType,
@@ -40,6 +41,12 @@ use nautilus_model::{
 
 use crate::exchange::SimulatedExchange;
 
+/// Execution client implementation for backtesting trading operations.
+///
+/// The `BacktestExecutionClient` provides an execution client interface for
+/// backtesting environments, handling order management and trade execution
+/// through simulated exchanges. It processes trading commands and coordinates
+/// with the simulation infrastructure to provide realistic execution behavior.
 pub struct BacktestExecutionClient {
     base: BaseExecutionClient,
     exchange: Rc<RefCell<SimulatedExchange>>,

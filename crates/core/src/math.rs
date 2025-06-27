@@ -13,18 +13,44 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! Mathematical functions and interpolation utilities.
+//!
+//! This module provides essential mathematical operations for quantitative trading,
+//! including linear and quadratic interpolation functions commonly used in financial
+//! data processing and analysis.
+
+/// Calculates the interpolation weight between `x1` and `x2` for a value `x`.
+///
+/// The returned weight `w` satisfies `y = (1 - w) * y1 + w * y2` when
+/// interpolating ordinates that correspond to abscissas `x1` and `x2`.
+///
+/// # Panics
+///
+/// Panics if `x1 == x2` because the denominator becomes zero.
 #[inline]
 #[must_use]
 pub fn linear_weight(x1: f64, x2: f64, x: f64) -> f64 {
+    assert!(
+        x1 != x2,
+        "`x1` and `x2` must differ to compute a linear weight"
+    );
     (x - x1) / (x2 - x1)
 }
 
+/// Performs linear interpolation using a weight factor.
+///
+/// Given ordinates `y1` and `y2` and a weight `x1_diff`, computes the
+/// interpolated value using the formula: `y1 + x1_diff * (y2 - y1)`.
 #[inline]
 #[must_use]
 pub fn linear_weighting(y1: f64, y2: f64, x1_diff: f64) -> f64 {
     x1_diff.mul_add(y2 - y1, y1)
 }
 
+/// Finds the position for interpolation in a sorted array.
+///
+/// Returns the index of the largest element in `xs` that is less than `x`,
+/// clamped to the valid range `[0, xs.len() - 1]`.
 #[inline]
 #[must_use]
 pub fn pos_search(x: f64, xs: &[f64]) -> usize {
@@ -33,9 +59,25 @@ pub fn pos_search(x: f64, xs: &[f64]) -> usize {
     std::cmp::min(std::cmp::max(pos.saturating_sub(1), 0), n_elem - 1)
 }
 
+/// Evaluates the quadratic Lagrange polynomial defined by three points.
+///
+/// Given points `(x0, y0)`, `(x1, y1)`, `(x2, y2)` this returns *P(x)* where
+/// *P* is the unique polynomial of degree ≤ 2 passing through the three
+/// points.
+///
+/// # Panics
+///
+/// Panics if any two abscissas are identical because the interpolation
+/// coefficients would involve division by zero.
 #[inline]
 #[must_use]
 pub fn quad_polynomial(x: f64, x0: f64, x1: f64, x2: f64, y0: f64, y1: f64, y2: f64) -> f64 {
+    // Protect against coincident x values that would lead to division by zero
+    assert!(
+        x0 != x1 && x0 != x2 && x1 != x2,
+        "Abscissas must be distinct"
+    );
+
     y0 * (x - x1) * (x - x2) / ((x0 - x1) * (x0 - x2))
         + y1 * (x - x0) * (x - x2) / ((x1 - x0) * (x1 - x2))
         + y2 * (x - x0) * (x - x1) / ((x2 - x0) * (x2 - x1))
@@ -55,6 +97,7 @@ pub fn quadratic_interpolation(x: f64, xs: &[f64], ys: &[f64]) -> f64 {
         (n_elem >= 3),
         "Need at least 3 points for quadratic interpolation"
     );
+    assert_eq!(xs.len(), ys.len(), "xs and ys must have the same length");
 
     if x <= xs[0] {
         return ys[0];
@@ -109,4 +152,26 @@ pub fn quadratic_interpolation(x: f64, xs: &[f64], ys: &[f64]) -> f64 {
         ),
         w,
     )
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+#[cfg(test)]
+mod tests {
+    use rstest::*;
+
+    use super::*;
+
+    #[rstest]
+    #[should_panic(expected = "must differ to compute a linear weight")]
+    fn test_linear_weight_zero_divisor() {
+        let _ = linear_weight(1.0, 1.0, 0.5);
+    }
+
+    #[rstest]
+    #[should_panic(expected = "Abscissas must be distinct")]
+    fn test_quad_polynomial_duplicate_x() {
+        let _ = quad_polynomial(0.5, 1.0, 1.0, 2.0, 0.0, 1.0, 4.0);
+    }
 }

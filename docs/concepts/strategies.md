@@ -1,7 +1,7 @@
 # Strategies
 
 The heart of the NautilusTrader user experience is in writing and working with
-trading strategies. Defining a trading strategy involves inheriting the `Strategy` class and
+trading strategies. Defining a strategy involves inheriting the `Strategy` class and
 implementing the methods required by the strategy's logic.
 
 **Key capabilities**:
@@ -21,7 +21,7 @@ Strategies can be added to Nautilus systems in any [environment contexts](/conce
 events based on their logic as soon as the system starts.
 
 Using the basic building blocks of data ingest, event handling, and order management (which we will discuss
-below), it's possible to implement any type of trading strategy including directional, momentum, re-balancing,
+below), it's possible to implement any type of strategy including directional, momentum, re-balancing,
 pairs, market making etc.
 
 :::info
@@ -65,7 +65,7 @@ and events.
 
 :::warning
 Do not call components such as `clock` and `logger` in the `__init__` constructor (which is prior to registration).
-This is because the systems clock and logging system have not yet been initialized.
+This is because the systems clock and logging subsystem have not yet been initialized.
 :::
 
 ### Handlers
@@ -383,7 +383,7 @@ of all available methods.
 :::
 
 :::info
-See the [Porfolio statistics](../concepts/advanced/portfolio_statistics.md) guide.
+See the [Portfolio statistics](../concepts/advanced/portfolio_statistics.md) guide.
 :::
 
 ### Trading commands

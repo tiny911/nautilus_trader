@@ -21,7 +21,10 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use nautilus_core::UnixNanos;
+use nautilus_core::{
+    UnixNanos,
+    correctness::{FAILED, check_equal, check_predicate_true},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -87,11 +90,17 @@ impl Position {
     /// # Panics
     ///
     /// This function panics if:
-    /// - The instrument ID does not match the fill’s `instrument_id`.
-    /// - The fill’s `order_side` is `NoOrderSide`.
-    /// - The fill’s `position_id` is `None`.
+    /// - The `instrument.id()` does not match the `fill.instrument_id`.
+    /// - The `fill.order_side` is `NoOrderSide`.
+    /// - The `fill.position_id` is `None`.
     pub fn new(instrument: &InstrumentAny, fill: OrderFilled) -> Self {
-        assert_eq!(instrument.id(), fill.instrument_id);
+        check_equal(
+            &instrument.id(),
+            &fill.instrument_id,
+            "instrument.id()",
+            "fill.instrument_id",
+        )
+        .expect(FAILED);
         assert_ne!(fill.order_side, OrderSide::NoOrderSide);
 
         let position_id = fill.position_id.expect("No position ID to open `Position`");
@@ -158,10 +167,13 @@ impl Position {
     ///
     /// Panics if the `fill.trade_id` is already present in the position’s `trade_ids`.
     pub fn apply(&mut self, fill: &OrderFilled) {
-        assert!(
+        check_predicate_true(
             !self.trade_ids.contains(&fill.trade_id),
-            "`fill.trade_id` already contained in `trade_ids"
-        );
+            "`fill.trade_id` already contained in `trade_ids",
+        )
+        .expect(FAILED);
+        check_predicate_true(fill.ts_event >= self.ts_opened, "fill.ts_event < ts_opened")
+            .expect(FAILED);
 
         if self.side == PositionSide::Flat {
             // Reset position
@@ -311,11 +323,57 @@ impl Position {
         self.sell_qty += last_qty_object;
     }
 
+    /// Calculates the average price using f64 arithmetic.
+    ///
+    /// # Design Decision: f64 vs Fixed-Point Arithmetic
+    ///
+    /// This function uses f64 arithmetic which provides sufficient precision for financial
+    /// calculations in this context. While f64 can introduce precision errors, the risk
+    /// is minimal here because:
+    ///
+    /// 1. **No cumulative error**: Each calculation starts fresh from precise Price and
+    ///    Quantity objects (derived from fixed-point raw values via `as_f64()`), rather
+    ///    than carrying f64 intermediate results between calculations.
+    ///
+    /// 2. **Single operation**: This is a single weighted average calculation, not a
+    ///    chain of operations where errors would compound.
+    ///
+    /// 3. **Overflow safety**: Raw integer arithmetic (price_raw * qty_raw) would risk
+    ///    overflow even with i128 intermediates, since max values can exceed integer limits.
+    ///
+    /// 4. **f64 precision**: ~15 decimal digits is sufficient for typical financial
+    ///    calculations at this level.
+    ///
+    /// For scenarios requiring higher precision (regulatory compliance, high-frequency
+    /// micro-calculations), consider using Decimal arithmetic libraries.
     #[must_use]
     fn calculate_avg_px(&self, qty: f64, avg_pg: f64, last_px: f64, last_qty: f64) -> f64 {
+        // Invalid state: attempting to calculate average price with no quantities
+        if qty == 0.0 && last_qty == 0.0 {
+            panic!("Cannot calculate average price: both quantities are zero");
+        }
+
+        // Invalid state: fill quantity cannot be zero
+        if last_qty == 0.0 {
+            panic!("Cannot calculate average price: fill quantity is zero");
+        }
+
+        // Valid case: new position (current quantity is zero)
+        if qty == 0.0 {
+            return last_px;
+        }
+
         let start_cost = avg_pg * qty;
         let event_cost = last_px * last_qty;
-        (start_cost + event_cost) / (qty + last_qty)
+        let total_qty = qty + last_qty;
+
+        // This should be mathematically impossible given the checks above
+        debug_assert!(
+            total_qty > 0.0,
+            "Total quantity unexpectedly zero in average price calculation"
+        );
+
+        (start_cost + event_cost) / total_qty
     }
 
     #[must_use]
@@ -350,12 +408,20 @@ impl Position {
     }
 
     fn calculate_points_inverse(&self, avg_px_open: f64, avg_px_close: f64) -> f64 {
+        // Invalid state: zero prices should never occur in valid market data
+        if avg_px_open == 0.0 {
+            panic!("Cannot calculate inverse points: open price is zero");
+        }
+        if avg_px_close == 0.0 {
+            panic!("Cannot calculate inverse points: close price is zero");
+        }
+
         let inverse_open = 1.0 / avg_px_open;
         let inverse_close = 1.0 / avg_px_close;
         match self.side {
             PositionSide::Long => inverse_open - inverse_close,
             PositionSide::Short => inverse_close - inverse_open,
-            _ => 0.0, // FLAT
+            _ => 0.0, // FLAT - this is a valid case
         }
     }
 
@@ -492,17 +558,10 @@ impl Position {
         }
     }
 
-    /// Returns the last `OrderFilled` event for the position.
-    ///
-    /// # Panics
-    ///
-    /// Panics if there are no events in the position.
+    /// Returns the last `OrderFilled` event for the position (if any after purging).
     #[must_use]
-    pub fn last_event(&self) -> OrderFilled {
-        *self
-            .events
-            .last()
-            .expect("Position invariant guarantees at least one event")
+    pub fn last_event(&self) -> Option<OrderFilled> {
+        self.events.last().copied()
     }
 
     #[must_use]
@@ -2043,5 +2102,45 @@ mod tests {
         assert_eq!(position.trade_ids.len(), 1);
         assert_eq!(position.events[0].client_order_id, order2.client_order_id());
         assert_eq!(position.trade_ids[0], TradeId::new("2"));
+    }
+
+    #[rstest]
+    fn test_purge_all_events_returns_none_for_last_event_and_trade_id() {
+        let audusd_sim = audusd_sim();
+        let audusd_sim = InstrumentAny::CurrencyPair(audusd_sim);
+
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .client_order_id(ClientOrderId::new("O-1"))
+            .instrument_id(audusd_sim.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from(100_000))
+            .build();
+
+        let position_id = PositionId::new("P-123456");
+        let fill = TestOrderEventStubs::filled(
+            &order,
+            &audusd_sim,
+            Some(TradeId::new("1")),
+            Some(position_id),
+            Some(Price::from("1.00050")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let mut position = Position::new(&audusd_sim, fill.into());
+
+        assert_eq!(position.events.len(), 1);
+        assert!(position.last_event().is_some());
+        assert!(position.last_trade_id().is_some());
+
+        position.purge_events_for_order(order.client_order_id());
+
+        assert_eq!(position.events.len(), 0);
+        assert_eq!(position.trade_ids.len(), 0);
+        assert!(position.last_event().is_none());
+        assert!(position.last_trade_id().is_none());
     }
 }

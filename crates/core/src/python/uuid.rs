@@ -13,6 +13,8 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! UUID helpers for PyO3.
+
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
@@ -109,7 +111,7 @@ impl UUID4 {
         self.to_string()
     }
 
-    /// Creates a new `UUID4` from a string representation.
+    /// Creates a new [`UUID4`] from a string representation.
     #[staticmethod]
     #[pyo3(name = "from_str")]
     fn py_from_str(value: &str) -> PyResult<Self> {

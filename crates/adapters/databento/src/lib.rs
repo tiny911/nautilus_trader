@@ -33,17 +33,26 @@
 #![deny(unsafe_code)]
 #![deny(nonstandard_style)]
 #![deny(missing_debug_implementations)]
-// #![deny(clippy::missing_errors_doc)]
-// #![deny(clippy::missing_panics_doc)]
+#![deny(clippy::missing_errors_doc)]
+#![deny(clippy::missing_panics_doc)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod common;
 pub mod decode;
 pub mod enums;
-pub mod live;
+pub mod historical;
 pub mod loader;
 pub mod symbology;
 pub mod types;
 
 #[cfg(feature = "python")]
 pub mod python;
+
+#[cfg(feature = "live")]
+pub mod data;
+
+#[cfg(feature = "live")]
+pub mod factories;
+
+#[cfg(feature = "live")]
+pub mod live;

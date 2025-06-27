@@ -84,6 +84,11 @@ The following Databento schemas are supported by NautilusTrader:
 | STATISTICS       | `DatabentoStatistics`             |
 | STATUS           | `InstrumentStatus`                |
 
+:::warning
+NautilusTrader no longer supports Databento DBN v1 schema decoding.
+You will need to migrate historical DBN v1 data to v2 or v3 for loading.
+:::
+
 :::info
 See also the Databento [Schemas and data formats](https://databento.com/docs/schemas-and-data-formats) guide.
 :::
@@ -129,8 +134,8 @@ Databento data includes various timestamp fields including (but not limited to):
 
 Nautilus data includes at *least* two timestamps (required by the `Data` contract):
 
-- `ts_event`: UNIX timestamp (nanoseconds) when the data event occurred
-- `ts_init`: UNIX timestamp (nanoseconds) when the data object was initialized
+- `ts_event`: UNIX timestamp (nanoseconds) when the data event occurred.
+- `ts_init`: UNIX timestamp (nanoseconds) when the data object was created.
 
 When decoding and normalizing Databento to Nautilus we generally assign the Databento `ts_recv` value to the Nautilus
 `ts_event` field, as this timestamp is much more reliable and consistent, and is guaranteed to be monotonically increasing per instrument.
@@ -233,7 +238,7 @@ Or requesting the previous days `statistics` schema for the `ES.FUT` parent symb
 
 ```python
 from nautilus_trader.adapters.databento import DATABENTO_CLIENT_ID
-from nautilus_trader.adapters.databento import DatabentoStatisics
+from nautilus_trader.adapters.databento import DatabentoStatistics
 from nautilus_trader.model import DataType
 
 instrument_id = InstrumentId.from_str("ES.FUT.GLBX")
@@ -242,7 +247,7 @@ metadata = {
     "start": "2024-03-06",
 }
 self.request_data(
-    data_type=DataType(DatabentoImbalance, metadata=metadata),
+    data_type=DataType(DatabentoStatistics, metadata=metadata),
     client_id=DATABENTO_CLIENT_ID,
 )
 ```
