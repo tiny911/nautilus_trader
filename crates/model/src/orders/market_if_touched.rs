@@ -431,9 +431,21 @@ impl Order for MarketIfTouchedOrder {
         if let OrderEventAny::Updated(ref event) = event {
             self.update(event);
         };
+
         let is_order_filled = matches!(event, OrderEventAny::Filled(_));
+        let is_order_triggered = matches!(event, OrderEventAny::Triggered(_));
+        let ts_event = if is_order_triggered {
+            Some(event.ts_event())
+        } else {
+            None
+        };
 
         self.core.apply(event)?;
+
+        if is_order_triggered {
+            self.is_triggered = true;
+            self.ts_triggered = ts_event;
+        }
 
         if is_order_filled {
             self.core.set_slippage(self.trigger_price);
@@ -450,7 +462,7 @@ impl Order for MarketIfTouchedOrder {
         }
 
         self.quantity = event.quantity;
-        self.leaves_qty = self.quantity - self.filled_qty;
+        self.leaves_qty = self.quantity.saturating_sub(self.filled_qty);
     }
 
     fn is_triggered(&self) -> Option<bool> {
@@ -478,7 +490,7 @@ impl Order for MarketIfTouchedOrder {
     }
 
     fn set_liquidity_side(&mut self, liquidity_side: LiquiditySide) {
-        self.liquidity_side = Some(liquidity_side)
+        self.liquidity_side = Some(liquidity_side);
     }
 
     fn would_reduce_only(&self, side: PositionSide, position_qty: Quantity) -> bool {
@@ -642,7 +654,7 @@ mod tests {
             .build();
     }
 
-    #[test]
+    #[rstest]
     fn test_market_if_touched_order_update() {
         // Create and accept a basic MarketIfTouchedOrder
         let order = OrderTestBuilder::new(OrderType::MarketIfTouched)
@@ -672,7 +684,7 @@ mod tests {
         assert_eq!(accepted_order.trigger_price(), Some(updated_trigger_price));
     }
 
-    #[test]
+    #[rstest]
     fn test_market_if_touched_order_from_order_initialized() {
         // Create an OrderInitialized event with all required fields for a MarketIfTouchedOrder
         let order_initialized = OrderInitializedBuilder::default()
@@ -701,7 +713,7 @@ mod tests {
         assert_eq!(order.trigger_type, order_initialized.trigger_type.unwrap());
     }
 
-    #[test]
+    #[rstest]
     fn test_market_if_touched_order_sets_slippage_when_filled() {
         // Create a MarketIfTouchedOrder
         let order = OrderTestBuilder::new(OrderType::MarketIfTouched)
@@ -744,9 +756,7 @@ mod tests {
 
         assert!(
             (actual_slippage - expected_slippage).abs() < 0.001,
-            "Expected slippage around {}, got {}",
-            expected_slippage,
-            actual_slippage
+            "Expected slippage around {expected_slippage}, was {actual_slippage}"
         );
     }
 }

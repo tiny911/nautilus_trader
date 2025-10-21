@@ -31,6 +31,10 @@ from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.data import BarType
+from nautilus_trader.model.enums import AccountType
+from nautilus_trader.model.enums import BookType
+from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.enums import TriggerType
 from nautilus_trader.model.identifiers import ComponentId
 from nautilus_trader.model.identifiers import Identifier
 from nautilus_trader.model.identifiers import InstrumentId
@@ -100,7 +104,9 @@ def nautilus_schema_hook(type_: type[Any]) -> dict[str, Any]:
     raise TypeError(f"Unsupported type for schema generation: {type_}")
 
 
-def msgspec_encoding_hook(obj: Any) -> Any:
+def msgspec_encoding_hook(obj: Any) -> Any:  # noqa: C901 (too complex)
+    if isinstance(obj, type):
+        return str(type)
     if isinstance(obj, Decimal):
         return str(obj)
     if isinstance(obj, UUID4):
@@ -111,6 +117,8 @@ def msgspec_encoding_hook(obj: Any) -> Any:
         return str(obj)
     if isinstance(obj, (Price | Quantity | Money | Currency)):
         return str(obj)
+    if isinstance(obj, (OmsType | AccountType | BookType)):
+        return obj.name
     if isinstance(obj, (pd.Timestamp | pd.Timedelta)):
         return obj.isoformat()
     if isinstance(obj, Environment):
@@ -145,6 +153,14 @@ def msgspec_decoding_hook(obj_type: type, obj: Any) -> Any:  # noqa: C901 (too c
         return Money.from_str(obj)
     if obj_type == Currency:
         return Currency.from_str(obj)
+    if obj_type == OmsType:
+        return OmsType[obj]
+    if obj_type == AccountType:
+        return AccountType[obj]
+    if obj_type == BookType:
+        return BookType[obj]
+    if obj_type == TriggerType:
+        return TriggerType[obj]
     if obj_type == Environment:
         return obj_type(obj)
     if obj_type in CUSTOM_DECODINGS:
@@ -345,10 +361,10 @@ class MessageBusConfig(NautilusConfig, frozen=True):
         The encoding for database operations, controls the type of serializer used.
     timestamps_as_iso8601, default False
         If timestamps should be persisted as ISO 8601 strings.
-        If `False` then will persit as UNIX nanoseconds.
+        If `False` then will persist as UNIX nanoseconds.
     buffer_interval_ms : PositiveInt, optional
         The buffer interval (milliseconds) between pipelined/batched transactions.
-        The recommended range if using buffered pipeling is [10, 1000] milliseconds,
+        The recommended range if using buffered pipelining is [10, 1000] milliseconds,
         with a good compromise being 100 milliseconds.
     autotrim_mins : int, optional
         The lookback window in minutes for automatic stream trimming.
@@ -551,6 +567,10 @@ class LoggingConfig(NautilusConfig, frozen=True):
     log_component_levels : dict[str, LogLevel]
         The additional per component log level filters, where keys are component
         IDs (e.g. actor/strategy IDs) and values are log levels.
+    log_components_only : bool, default False
+        If only components with explicit component-level filters should be logged.
+        When enabled, only log messages from components that have been explicitly
+        configured in `log_component_levels` will be output.
     bypass_logging : bool, default False
         If all logging should be bypassed.
     print_config : bool, default False
@@ -574,6 +594,7 @@ class LoggingConfig(NautilusConfig, frozen=True):
     log_file_max_backup_count: NonNegativeInt = 5
     log_colors: bool = True
     log_component_levels: dict[str, str] | None = None
+    log_components_only: bool = False
     bypass_logging: bool = False
     print_config: bool = False
     use_pyo3: bool = False

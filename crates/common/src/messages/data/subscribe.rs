@@ -314,7 +314,6 @@ pub struct SubscribeBars {
     pub venue: Option<Venue>,
     pub command_id: UUID4,
     pub ts_init: UnixNanos,
-    pub await_partial: bool,
     pub params: Option<IndexMap<String, String>>,
 }
 
@@ -326,7 +325,6 @@ impl SubscribeBars {
         venue: Option<Venue>,
         command_id: UUID4,
         ts_init: UnixNanos,
-        await_partial: bool,
         params: Option<IndexMap<String, String>>,
     ) -> Self {
         check_client_id_or_venue(&client_id, &venue);
@@ -336,7 +334,6 @@ impl SubscribeBars {
             venue,
             command_id,
             ts_init,
-            await_partial,
             params,
         }
     }
@@ -386,6 +383,38 @@ pub struct SubscribeIndexPrices {
 
 impl SubscribeIndexPrices {
     /// Creates a new [`SubscribeIndexPrices`] instance.
+    pub fn new(
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        venue: Option<Venue>,
+        command_id: UUID4,
+        ts_init: UnixNanos,
+        params: Option<IndexMap<String, String>>,
+    ) -> Self {
+        check_client_id_or_venue(&client_id, &venue);
+        Self {
+            instrument_id,
+            client_id,
+            venue,
+            command_id,
+            ts_init,
+            params,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SubscribeFundingRates {
+    pub instrument_id: InstrumentId,
+    pub client_id: Option<ClientId>,
+    pub venue: Option<Venue>,
+    pub command_id: UUID4,
+    pub ts_init: UnixNanos,
+    pub params: Option<IndexMap<String, String>>,
+}
+
+impl SubscribeFundingRates {
+    /// Creates a new [`SubscribeFundingRates`] instance.
     pub fn new(
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,

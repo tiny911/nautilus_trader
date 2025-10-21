@@ -258,6 +258,12 @@ impl OrderMatchingCore {
     }
 
     pub fn match_stop_order(&mut self, order: &StopOrderAny) {
+        match order {
+            StopOrderAny::TrailingStopMarket(o) if !o.is_activated => return,
+            StopOrderAny::TrailingStopLimit(o) if !o.is_activated => return,
+            _ => {}
+        }
+
         if self.is_stop_matched(order.order_side_specified(), order.stop_px())
             && let Some(handler) = &mut self.trigger_stop_order
         {
@@ -325,9 +331,11 @@ mod tests {
             .quantity(Quantity::from("100"))
             .build();
 
-        matching_core.add_order(order.clone().into()).unwrap();
+        matching_core
+            .add_order(PassiveOrderAny::try_from(order.clone()).unwrap())
+            .unwrap();
 
-        let passive_order: PassiveOrderAny = order.into();
+        let passive_order: PassiveOrderAny = PassiveOrderAny::try_from(order).unwrap();
         assert!(matching_core.get_orders_bid().contains(&passive_order));
         assert!(!matching_core.get_orders_ask().contains(&passive_order));
         assert_eq!(matching_core.get_orders_bid().len(), 1);
@@ -347,9 +355,11 @@ mod tests {
             .quantity(Quantity::from("100"))
             .build();
 
-        matching_core.add_order(order.clone().into()).unwrap();
+        matching_core
+            .add_order(PassiveOrderAny::try_from(order.clone()).unwrap())
+            .unwrap();
 
-        let passive_order: PassiveOrderAny = order.into();
+        let passive_order: PassiveOrderAny = PassiveOrderAny::try_from(order).unwrap();
         assert!(matching_core.get_orders_ask().contains(&passive_order));
         assert!(!matching_core.get_orders_bid().contains(&passive_order));
         assert_eq!(matching_core.get_orders_ask().len(), 1);
@@ -371,7 +381,9 @@ mod tests {
 
         let client_order_id = order.client_order_id();
 
-        matching_core.add_order(order.into()).unwrap();
+        matching_core
+            .add_order(PassiveOrderAny::try_from(order).unwrap())
+            .unwrap();
         matching_core.bid = Some(Price::from("100.00"));
         matching_core.ask = Some(Price::from("100.00"));
         matching_core.last = Some(Price::from("100.00"));
@@ -398,7 +410,7 @@ mod tests {
             .quantity(Quantity::from("100"))
             .build();
 
-        let result = matching_core.delete_order(&order.into());
+        let result = matching_core.delete_order(&PassiveOrderAny::try_from(order).unwrap());
         assert!(result.is_err());
     }
 
@@ -416,8 +428,12 @@ mod tests {
             .quantity(Quantity::from("100"))
             .build();
 
-        matching_core.add_order(order.clone().into()).unwrap();
-        matching_core.delete_order(&order.into()).unwrap();
+        matching_core
+            .add_order(PassiveOrderAny::try_from(order.clone()).unwrap())
+            .unwrap();
+        matching_core
+            .delete_order(&PassiveOrderAny::try_from(order).unwrap())
+            .unwrap();
 
         assert!(matching_core.get_orders_ask().is_empty());
         assert!(matching_core.get_orders_bid().is_empty());

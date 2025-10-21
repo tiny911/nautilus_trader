@@ -13,11 +13,9 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use std::num::NonZeroUsize;
+
 use ahash::AHashMap;
-#[cfg(feature = "defi")]
-use alloy_primitives::Address;
-#[cfg(feature = "defi")]
-use nautilus_model::defi::Blockchain;
 use nautilus_model::{
     data::{BarType, DataType},
     identifiers::{ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
@@ -69,11 +67,14 @@ pub fn get_book_depth10_topic(instrument_id: InstrumentId) -> MStr<Topic> {
 }
 
 #[must_use]
-pub fn get_book_snapshots_topic(instrument_id: InstrumentId) -> MStr<Topic> {
+pub fn get_book_snapshots_topic(
+    instrument_id: InstrumentId,
+    interval_ms: NonZeroUsize,
+) -> MStr<Topic> {
     get_message_bus()
         .borrow_mut()
         .switchboard
-        .get_book_snapshots_topic(instrument_id)
+        .get_book_snapshots_topic(instrument_id, interval_ms)
 }
 
 #[must_use]
@@ -117,6 +118,14 @@ pub fn get_index_price_topic(instrument_id: InstrumentId) -> MStr<Topic> {
 }
 
 #[must_use]
+pub fn get_funding_rate_topic(instrument_id: InstrumentId) -> MStr<Topic> {
+    get_message_bus()
+        .borrow_mut()
+        .switchboard
+        .get_funding_rate_topic(instrument_id)
+}
+
+#[must_use]
 pub fn get_instrument_status_topic(instrument_id: InstrumentId) -> MStr<Topic> {
     get_message_bus()
         .borrow_mut()
@@ -130,6 +139,14 @@ pub fn get_instrument_close_topic(instrument_id: InstrumentId) -> MStr<Topic> {
         .borrow_mut()
         .switchboard
         .get_instrument_close_topic(instrument_id)
+}
+
+#[must_use]
+pub fn get_order_fills_topic(instrument_id: InstrumentId) -> MStr<Topic> {
+    get_message_bus()
+        .borrow_mut()
+        .switchboard
+        .get_order_fills_topic(instrument_id)
 }
 
 #[must_use]
@@ -164,42 +181,6 @@ pub fn get_event_positions_topic(strategy_id: StrategyId) -> MStr<Topic> {
         .get_event_positions_topic(strategy_id)
 }
 
-#[cfg(feature = "defi")]
-#[must_use]
-pub fn get_defi_blocks_topic(chain: Blockchain) -> MStr<Topic> {
-    get_message_bus()
-        .borrow_mut()
-        .switchboard
-        .get_defi_blocks_topic(chain)
-}
-
-#[cfg(feature = "defi")]
-#[must_use]
-pub fn get_defi_pool_topic(address: Address) -> MStr<Topic> {
-    get_message_bus()
-        .borrow_mut()
-        .switchboard
-        .get_defi_pool_topic(address)
-}
-
-#[cfg(feature = "defi")]
-#[must_use]
-pub fn get_defi_pool_swaps_topic(address: Address) -> MStr<Topic> {
-    get_message_bus()
-        .borrow_mut()
-        .switchboard
-        .get_defi_pool_swaps_topic(address)
-}
-
-#[cfg(feature = "defi")]
-#[must_use]
-pub fn get_defi_liquidity_topic(address: Address) -> MStr<Topic> {
-    get_message_bus()
-        .borrow_mut()
-        .switchboard
-        .get_defi_pool_liquidity_topic(address)
-}
-
 /// Represents a switchboard of built-in messaging endpoint names.
 #[derive(Clone, Debug)]
 pub struct MessagingSwitchboard {
@@ -214,20 +195,16 @@ pub struct MessagingSwitchboard {
     bar_topics: AHashMap<BarType, MStr<Topic>>,
     mark_price_topics: AHashMap<InstrumentId, MStr<Topic>>,
     index_price_topics: AHashMap<InstrumentId, MStr<Topic>>,
+    funding_rate_topics: AHashMap<InstrumentId, MStr<Topic>>,
     instrument_status_topics: AHashMap<InstrumentId, MStr<Topic>>,
     instrument_close_topics: AHashMap<InstrumentId, MStr<Topic>>,
+    order_fills_topics: AHashMap<InstrumentId, MStr<Topic>>,
     event_orders_topics: AHashMap<StrategyId, MStr<Topic>>,
     event_positions_topics: AHashMap<StrategyId, MStr<Topic>>,
     order_snapshots_topics: AHashMap<ClientOrderId, MStr<Topic>>,
     positions_snapshots_topics: AHashMap<PositionId, MStr<Topic>>,
     #[cfg(feature = "defi")]
-    defi_block_topics: AHashMap<Blockchain, MStr<Topic>>,
-    #[cfg(feature = "defi")]
-    defi_pool_topics: AHashMap<Address, MStr<Topic>>,
-    #[cfg(feature = "defi")]
-    defi_pool_swap_topics: AHashMap<Address, MStr<Topic>>,
-    #[cfg(feature = "defi")]
-    defi_pool_liquidity_topics: AHashMap<Address, MStr<Topic>>,
+    pub(crate) defi: crate::defi::switchboard::DefiSwitchboard,
 }
 
 impl Default for MessagingSwitchboard {
@@ -244,21 +221,17 @@ impl Default for MessagingSwitchboard {
             trade_topics: AHashMap::new(),
             mark_price_topics: AHashMap::new(),
             index_price_topics: AHashMap::new(),
+            funding_rate_topics: AHashMap::new(),
             bar_topics: AHashMap::new(),
             instrument_status_topics: AHashMap::new(),
             instrument_close_topics: AHashMap::new(),
+            order_fills_topics: AHashMap::new(),
             order_snapshots_topics: AHashMap::new(),
             event_orders_topics: AHashMap::new(),
             event_positions_topics: AHashMap::new(),
             positions_snapshots_topics: AHashMap::new(),
             #[cfg(feature = "defi")]
-            defi_block_topics: AHashMap::new(),
-            #[cfg(feature = "defi")]
-            defi_pool_topics: AHashMap::new(),
-            #[cfg(feature = "defi")]
-            defi_pool_swap_topics: AHashMap::new(),
-            #[cfg(feature = "defi")]
-            defi_pool_liquidity_topics: AHashMap::new(),
+            defi: crate::defi::switchboard::DefiSwitchboard::default(),
         }
     }
 }
@@ -353,14 +326,18 @@ impl MessagingSwitchboard {
     }
 
     #[must_use]
-    pub fn get_book_snapshots_topic(&mut self, instrument_id: InstrumentId) -> MStr<Topic> {
+    pub fn get_book_snapshots_topic(
+        &mut self,
+        instrument_id: InstrumentId,
+        interval_ms: NonZeroUsize,
+    ) -> MStr<Topic> {
         *self
             .book_snapshots_topics
             .entry(instrument_id)
             .or_insert_with(|| {
                 format!(
-                    "data.book.snapshots.{}.{}",
-                    instrument_id.venue, instrument_id.symbol
+                    "data.book.snapshots.{}.{}.{}",
+                    instrument_id.venue, instrument_id.symbol, interval_ms
                 )
                 .into()
             })
@@ -424,6 +401,19 @@ impl MessagingSwitchboard {
             })
     }
 
+    pub fn get_funding_rate_topic(&mut self, instrument_id: InstrumentId) -> MStr<Topic> {
+        *self
+            .funding_rate_topics
+            .entry(instrument_id)
+            .or_insert_with(|| {
+                format!(
+                    "data.funding_rates.{}.{}",
+                    instrument_id.venue, instrument_id.symbol
+                )
+                .into()
+            })
+    }
+
     #[must_use]
     pub fn get_instrument_status_topic(&mut self, instrument_id: InstrumentId) -> MStr<Topic> {
         *self
@@ -450,6 +440,14 @@ impl MessagingSwitchboard {
                 )
                 .into()
             })
+    }
+
+    #[must_use]
+    pub fn get_order_fills_topic(&mut self, instrument_id: InstrumentId) -> MStr<Topic> {
+        *self
+            .order_fills_topics
+            .entry(instrument_id)
+            .or_insert_with(|| format!("events.fills.{instrument_id}").into())
     }
 
     #[must_use]
@@ -482,42 +480,6 @@ impl MessagingSwitchboard {
             .event_positions_topics
             .entry(strategy_id)
             .or_insert_with(|| format!("events.position.{strategy_id}").into())
-    }
-
-    #[cfg(feature = "defi")]
-    #[must_use]
-    pub fn get_defi_blocks_topic(&mut self, chain: Blockchain) -> MStr<Topic> {
-        *self
-            .defi_block_topics
-            .entry(chain)
-            .or_insert_with(|| format!("data.defi.blocks.{chain}").into())
-    }
-
-    #[cfg(feature = "defi")]
-    #[must_use]
-    pub fn get_defi_pool_topic(&mut self, address: Address) -> MStr<Topic> {
-        *self
-            .defi_pool_topics
-            .entry(address)
-            .or_insert_with(|| format!("data.defi.pool.{address}").into())
-    }
-
-    #[cfg(feature = "defi")]
-    #[must_use]
-    pub fn get_defi_pool_swaps_topic(&mut self, address: Address) -> MStr<Topic> {
-        *self
-            .defi_pool_swap_topics
-            .entry(address)
-            .or_insert_with(|| format!("data.defi.pool_swaps.{address}").into())
-    }
-
-    #[cfg(feature = "defi")]
-    #[must_use]
-    pub fn get_defi_pool_liquidity_topic(&mut self, address: Address) -> MStr<Topic> {
-        *self
-            .defi_pool_liquidity_topics
-            .entry(address)
-            .or_insert_with(|| format!("data.defi.pool_liquidity.{address}").into())
     }
 }
 
@@ -591,8 +553,9 @@ mod tests {
         mut switchboard: MessagingSwitchboard,
         instrument_id: InstrumentId,
     ) {
-        let expected_topic = "data.book.snapshots.XCME.ESZ24".into();
-        let result = switchboard.get_book_snapshots_topic(instrument_id);
+        let expected_topic = "data.book.snapshots.XCME.ESZ24.1000".into();
+        let interval_ms = NonZeroUsize::new(1000).unwrap();
+        let result = switchboard.get_book_snapshots_topic(instrument_id, interval_ms);
         assert_eq!(result, expected_topic);
         assert!(
             switchboard

@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{str::FromStr, sync::Arc};
+use std::str::FromStr;
 
 use nautilus_core::{
     UUID4, UnixNanos,
@@ -33,7 +33,6 @@ use crate::timer::{TimeEvent, TimeEventCallback, TimeEventHandlerV2};
     module = "nautilus_trader.core.nautilus_pyo3.common",
     name = "TimeEventHandler"
 )]
-#[derive(Clone)]
 /// Temporary time event handler for Python inter-operatbility
 ///
 /// TODO: Remove once control flow moves into Rust
@@ -46,7 +45,7 @@ pub struct TimeEventHandler_Py {
     /// The time event.
     pub event: TimeEvent,
     /// The callable python object.
-    pub callback: Arc<PyObject>,
+    pub callback: Py<PyAny>,
 }
 
 impl From<TimeEventHandlerV2> for TimeEventHandler_Py {
@@ -61,7 +60,7 @@ impl From<TimeEventHandlerV2> for TimeEventHandler_Py {
                 #[cfg(feature = "python")]
                 TimeEventCallback::Python(callback) => callback,
                 TimeEventCallback::Rust(_) => {
-                    panic!("Python time event handler is not supported for Rust callback")
+                    panic!("Python time event handler is not supported for Rust callbacks")
                 }
             },
         }
@@ -106,7 +105,7 @@ impl TimeEvent {
         Ok(())
     }
 
-    fn __getstate__(&self, py: Python) -> PyResult<PyObject> {
+    fn __getstate__(&self, py: Python) -> PyResult<Py<PyAny>> {
         (
             self.name.to_string(),
             self.event_id.to_string(),
@@ -116,7 +115,7 @@ impl TimeEvent {
             .into_py_any(py)
     }
 
-    fn __reduce__(&self, py: Python) -> PyResult<PyObject> {
+    fn __reduce__(&self, py: Python) -> PyResult<Py<PyAny>> {
         let safe_constructor = py.get_type::<Self>().getattr("_safe_constructor")?;
         let state = self.__getstate__(py)?;
         (safe_constructor, PyTuple::empty(py), state).into_py_any(py)
@@ -141,10 +140,6 @@ impl TimeEvent {
     }
 
     fn __repr__(&self) -> String {
-        format!("{}('{}')", stringify!(TimeEvent), self)
-    }
-
-    fn __str__(&self) -> String {
         self.to_string()
     }
 
@@ -207,11 +202,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_live_timer_starts_and_stops() {
-        pyo3::prepare_freethreaded_python();
-
         set_time_event_sender(Arc::new(TestTimeEventSender));
 
-        let callback = Python::with_gil(|py| {
+        Python::initialize();
+        let callback = Python::attach(|py| {
             let callable = wrap_pyfunction!(receive_event, py).unwrap();
             let callable = callable.into_py_any_unwrap(py);
             TimeEventCallback::from(callable)
@@ -246,11 +240,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_live_timer_with_stop_time() {
-        pyo3::prepare_freethreaded_python();
-
         set_time_event_sender(Arc::new(TestTimeEventSender));
 
-        let callback = Python::with_gil(|py| {
+        Python::initialize();
+        let callback = Python::attach(|py| {
             let callable = wrap_pyfunction!(receive_event, py).unwrap();
             let callable = callable.into_py_any_unwrap(py);
             TimeEventCallback::from(callable)
@@ -285,11 +278,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_live_timer_with_zero_interval_and_immediate_stop_time() {
-        pyo3::prepare_freethreaded_python();
-
         set_time_event_sender(Arc::new(TestTimeEventSender));
 
-        let callback = Python::with_gil(|py| {
+        Python::initialize();
+        let callback = Python::attach(|py| {
             let callable = wrap_pyfunction!(receive_event, py).unwrap();
             let callable = callable.into_py_any_unwrap(py);
             TimeEventCallback::from(callable)

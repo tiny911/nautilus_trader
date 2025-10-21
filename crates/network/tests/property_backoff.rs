@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use nautilus_network::backoff::ExponentialBackoff;
 use proptest::prelude::*;
+use rstest::rstest;
 
 /// Generate valid backoff parameters.
 fn backoff_params_strategy() -> impl Strategy<Value = (Duration, Duration, f64, u64, bool)> {
@@ -52,7 +53,7 @@ fn backoff_params_strategy() -> impl Strategy<Value = (Duration, Duration, f64, 
 
 proptest! {
     /// Property: Backoff delays should grow exponentially up to the maximum.
-    #[test]
+    #[rstest]
     fn backoff_grows_exponentially_to_max(
         (initial, max, factor, jitter_ms, immediate_first) in backoff_params_strategy(),
         iterations in 1usize..=20
@@ -123,7 +124,7 @@ proptest! {
     }
 
     /// Property: Jitter should always be within the specified bounds.
-    #[test]
+    #[rstest]
     fn jitter_within_bounds(
         (initial, max, factor, jitter_ms, immediate_first) in backoff_params_strategy(),
         iterations in 1usize..=50
@@ -155,7 +156,7 @@ proptest! {
     }
 
     /// Property: Reset should restore initial state.
-    #[test]
+    #[rstest]
     fn reset_restores_initial_state(
         (initial, max, factor, jitter_ms, immediate_first) in backoff_params_strategy(),
         advance_iterations in 1usize..=10
@@ -171,8 +172,13 @@ proptest! {
             backoff.next_duration();
         }
 
-        // State should have changed (unless immediate_first with single iteration)
-        if !(immediate_first && advance_iterations == 1) {
+        // State should have changed when growth beyond the initial delay is
+        // actually possible.  This is not the case when the initial delay is
+        // already at the maximum because further calls will clamp to the
+        // same maximum value.  We therefore only assert a change when
+        //  * growth is possible (initial < max), and
+        //  * we are not in the special immediate-first + single iteration case.
+        if initial < max && !(immediate_first && advance_iterations == 1) {
             prop_assert_ne!(
                 backoff.current_delay(),
                 initial_delay,
@@ -201,7 +207,7 @@ proptest! {
     }
 
     /// Property: Immediate-first behavior should work correctly.
-    #[test]
+    #[rstest]
     fn immediate_first_behavior(
         (initial, max, factor, jitter_ms, _) in backoff_params_strategy(),
         subsequent_calls in 1usize..=5
@@ -223,7 +229,7 @@ proptest! {
             let delay = backoff.next_duration();
             prop_assert!(
                 delay >= initial,
-                "Subsequent call {} should return delay >= initial ({}ms), got {}ms",
+                "Subsequent call {} should return delay >= initial ({}ms), was {}ms",
                 i + 1,
                 initial.as_millis(),
                 delay.as_millis()
@@ -232,7 +238,7 @@ proptest! {
     }
 
     /// Property: Backoff should eventually reach and stay at maximum delay.
-    #[test]
+    #[rstest]
     fn eventually_reaches_maximum(
         (initial, max, factor, jitter_ms, immediate_first) in backoff_params_strategy(),
         excess_iterations in 1usize..=10
@@ -272,7 +278,7 @@ proptest! {
     }
 
     /// Property: Backoff delays should be deterministic for same parameters (ignoring jitter).
-    #[test]
+    #[rstest]
     fn deterministic_base_progression(
         (initial, max, factor, _jitter_ms, immediate_first) in backoff_params_strategy(),
         iterations in 1usize..=10
@@ -301,7 +307,7 @@ proptest! {
     }
 
     /// Property: Factor bounds should be respected.
-    #[test]
+    #[rstest]
     fn factor_bounds_respected(
         initial_ms in 1u64..=1000u64,
         max_ms in 1000u64..=10000u64,

@@ -168,7 +168,7 @@ class Trader(Component):
         """
         return list(self._strategies.values())
 
-    def exec_algorithms(self) -> list[Any]:  # ExecutonAlgorithm (circular import issues)
+    def exec_algorithms(self) -> list[Any]:  # ExecutionAlgorithm (circular import issues)
         """
         Return the execution algorithms loaded in the trader.
 
@@ -853,8 +853,11 @@ class Trader(Component):
         pd.DataFrame
 
         """
-        positions = self._cache.positions() + self._cache.position_snapshots()
-        return ReportProvider.generate_positions_report(positions)
+        positions = self._cache.positions()
+        snapshots = self._cache.position_snapshots()
+
+        # Generate report with positions and snapshots
+        return ReportProvider.generate_positions_report(positions, snapshots)
 
     def generate_account_report(self, venue: Venue) -> pd.DataFrame:
         """

@@ -28,9 +28,38 @@ use crate::defi::{
     },
 };
 
+/// Represents the precise position of an event within a blockchain.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BlockPosition {
+    /// The block number (height) in the blockchain where the event occurred.
+    pub number: u64,
+    /// The unique hash identifier of the transaction containing the event.
+    pub transaction_hash: String,
+    /// The index position of the transaction within the block (0-based).
+    pub transaction_index: u32,
+    /// The index position of the log/event within the transaction (0-based).
+    pub log_index: u32,
+}
+
+impl BlockPosition {
+    /// Creates a new [`BlockPosition`] with the specified positioning data.
+    pub fn new(number: u64, transaction_hash: String, index: u32, log_index: u32) -> Self {
+        Self {
+            number,
+            transaction_hash,
+            transaction_index: index,
+            log_index,
+        }
+    }
+}
+
 /// Represents an Ethereum-compatible blockchain block with essential metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+)]
 pub struct Block {
     /// The blockchain network this block is part of.
     #[serde(skip)]
@@ -118,7 +147,7 @@ impl Block {
     }
 
     pub fn set_chain(&mut self, chain: Blockchain) {
-        self.chain = Some(chain)
+        self.chain = Some(chain);
     }
 
     /// Sets the EIP-1559 base fee and returns `self` for chaining.
@@ -333,7 +362,7 @@ mod tests {
         let mut block =
             match serde_json::from_str::<RpcNodeWssResponse<Block>>(&eth_rpc_block_response) {
                 Ok(rpc_response) => rpc_response.params.result,
-                Err(e) => panic!("Failed to deserialize block response with error {}", e),
+                Err(e) => panic!("Failed to deserialize block response with error {e}"),
             };
         block.set_chain(Blockchain::Ethereum);
 
@@ -369,7 +398,7 @@ mod tests {
         let mut block =
             match serde_json::from_str::<RpcNodeWssResponse<Block>>(&polygon_rpc_block_response) {
                 Ok(rpc_response) => rpc_response.params.result,
-                Err(e) => panic!("Failed to deserialize block response with error {}", e),
+                Err(e) => panic!("Failed to deserialize block response with error {e}"),
             };
         block.set_chain(Blockchain::Polygon);
 
@@ -404,7 +433,7 @@ mod tests {
         let mut block =
             match serde_json::from_str::<RpcNodeWssResponse<Block>>(&base_rpc_block_response) {
                 Ok(rpc_response) => rpc_response.params.result,
-                Err(e) => panic!("Failed to deserialize block response with error {}", e),
+                Err(e) => panic!("Failed to deserialize block response with error {e}"),
             };
         block.set_chain(Blockchain::Base);
 
@@ -440,7 +469,7 @@ mod tests {
         let mut block =
             match serde_json::from_str::<RpcNodeWssResponse<Block>>(&arbitrum_rpc_block_response) {
                 Ok(rpc_response) => rpc_response.params.result,
-                Err(e) => panic!("Failed to deserialize block response with error {}", e),
+                Err(e) => panic!("Failed to deserialize block response with error {e}"),
             };
         block.set_chain(Blockchain::Arbitrum);
 

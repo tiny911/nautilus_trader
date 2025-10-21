@@ -62,12 +62,15 @@ impl BlockchainHttpRpcClient {
             BlockchainRpcClientError::ClientError(format!("Failed to serialize request: {e}"))
         })?;
 
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+
         match self
             .http_client
             .request(
                 Method::POST,
                 self.http_rpc_url.clone(),
-                None,
+                Some(headers),
                 Some(body_bytes),
                 None,
                 None,
@@ -90,8 +93,40 @@ impl BlockchainHttpRpcClient {
     ) -> anyhow::Result<T> {
         match self.send_rpc_request(rpc_request).await {
             Ok(bytes) => match serde_json::from_slice::<RpcNodeHttpResponse<T>>(bytes.as_ref()) {
-                Ok(parsed) => Ok(parsed.result),
-                Err(e) => Err(anyhow::anyhow!("Failed to parse eth call response: {}", e)),
+                Ok(parsed) => {
+                    if let Some(error) = parsed.error {
+                        Err(anyhow::anyhow!(
+                            "RPC error {}: {}",
+                            error.code,
+                            error.message
+                        ))
+                    } else if let Some(result) = parsed.result {
+                        Ok(result)
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "Response missing both result and error fields"
+                        ))
+                    }
+                }
+                Err(e) => {
+                    // Try to convert bytes to string for better error reporting
+                    let raw_response = String::from_utf8_lossy(bytes.as_ref());
+                    let preview = if raw_response.len() > 500 {
+                        format!(
+                            "{}... (truncated, {} bytes total)",
+                            &raw_response[..500],
+                            raw_response.len()
+                        )
+                    } else {
+                        raw_response.to_string()
+                    };
+
+                    Err(anyhow::anyhow!(
+                        "Failed to parse eth call response: {}\nRaw response: {}",
+                        e,
+                        preview
+                    ))
+                }
             },
             Err(e) => Err(anyhow::anyhow!(
                 "Failed to execute eth call RPC request: {}",
@@ -102,18 +137,29 @@ impl BlockchainHttpRpcClient {
 
     /// Creates a properly formatted `eth_call` JSON-RPC request object targeting a specific contract address with encoded function data.
     #[must_use]
-    pub fn construct_eth_call(&self, to: &str, call_data: &[u8]) -> serde_json::Value {
-        let encoded_data = hex::encode(call_data);
+    pub fn construct_eth_call(
+        &self,
+        to: &str,
+        call_data: &[u8],
+        block: Option<u64>,
+    ) -> serde_json::Value {
+        let encoded_data = format!("0x{}", hex::encode(call_data));
         let call = serde_json::json!({
             "to": to,
             "data": encoded_data
         });
 
+        let block_param = if let Some(block_number) = block {
+            serde_json::json!(format!("0x{:x}", block_number))
+        } else {
+            serde_json::json!("latest")
+        };
+
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "eth_call",
-            "params": [call]
+            "params": [call, block_param]
         })
     }
 }

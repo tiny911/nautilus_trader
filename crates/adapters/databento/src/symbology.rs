@@ -61,13 +61,14 @@ pub fn instrument_id_to_symbol_string(
     instrument_id.symbol.to_string()
 }
 
+/// Decodes a Databento record into a Nautilus `InstrumentId`.
+///
 /// # Errors
 ///
-/// Returns an error if mapping record to `InstrumentId` fails.
-///
-/// # Panics
-///
-/// Panics if the raw symbol from metadata cannot be converted into a `Symbol`.
+/// Returns an error if:
+/// - The publisher cannot be extracted from the record.
+/// - The publisher ID is not found in the venue map.
+/// - The underlying instrument ID mapping fails.
 pub fn decode_nautilus_instrument_id(
     record: &dbn::RecordRef,
     metadata: &mut MetadataCache,
@@ -91,13 +92,15 @@ pub fn decode_nautilus_instrument_id(
     Ok(instrument_id)
 }
 
+/// Gets the Nautilus `InstrumentId` for a Databento record.
+///
 /// # Errors
 ///
-/// Returns an error if mapping record to `InstrumentId` fails or timestamp overflow occurs.
-///
-/// # Panics
-///
-/// Panics if the raw symbol from metadata cannot be converted into a `Symbol`.
+/// Returns an error if:
+/// - The record type is not supported.
+/// - Timestamp overflow occurs when calculating the date.
+/// - Symbol metadata lookup fails.
+/// - No raw symbol is found for the instrument ID.
 pub fn get_nautilus_instrument_id_for_record(
     record: &dbn::RecordRef,
     metadata: &mut MetadataCache,
@@ -124,6 +127,12 @@ pub fn get_nautilus_instrument_id_for_record(
     } else if let Some(msg) = record.get::<dbn::StatMsg>() {
         (msg.hd.instrument_id, msg.ts_recv)
     } else if let Some(msg) = record.get::<dbn::InstrumentDefMsg>() {
+        (msg.hd.instrument_id, msg.ts_recv)
+    } else if let Some(msg) = record.get::<dbn::Cmbp1Msg>() {
+        (msg.hd.instrument_id, msg.ts_recv)
+    } else if let Some(msg) = record.get::<dbn::CbboMsg>() {
+        (msg.hd.instrument_id, msg.ts_recv)
+    } else if let Some(msg) = record.get::<dbn::TbboMsg>() {
         (msg.hd.instrument_id, msg.ts_recv)
     } else {
         anyhow::bail!("DBN message type is not currently supported")
@@ -224,7 +233,6 @@ mod tests {
 
     #[rstest]
     fn test_instrument_id_to_symbol_string_updates_map() {
-        use nautilus_model::identifiers::Venue;
         let symbol = Symbol::from("TEST");
         let venue = Venue::from("XNAS");
         let instrument_id = InstrumentId::new(symbol, venue);

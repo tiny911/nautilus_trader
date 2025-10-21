@@ -25,10 +25,14 @@ from nautilus_trader.model.book cimport OrderBook
 from nautilus_trader.model.data cimport Bar
 from nautilus_trader.model.data cimport BarType
 from nautilus_trader.model.data cimport DataType
+from nautilus_trader.model.data cimport FundingRateUpdate
+from nautilus_trader.model.data cimport IndexPriceUpdate
 from nautilus_trader.model.data cimport InstrumentClose
 from nautilus_trader.model.data cimport InstrumentStatus
+from nautilus_trader.model.data cimport MarkPriceUpdate
 from nautilus_trader.model.data cimport OrderBookDelta
 from nautilus_trader.model.data cimport OrderBookDeltas
+from nautilus_trader.model.data cimport OrderBookDepth10
 from nautilus_trader.model.data cimport QuoteTick
 from nautilus_trader.model.data cimport TradeTick
 from nautilus_trader.model.identifiers cimport InstrumentId
@@ -362,6 +366,8 @@ cdef class SubscribeOrderBook(SubscribeData):
     ----------
     instrument_id : InstrumentId
         The instrument ID for the subscription.
+    data_type : DataType, {``OrderBookDeltas``, ``OrderBookDepth10``}
+        The data type for book updates.
     book_type : BookType
         The order book type.
     client_id : ClientId or ``None``
@@ -376,10 +382,8 @@ cdef class SubscribeOrderBook(SubscribeData):
         The maximum depth for the subscription.
     managed: bool, optional, default True
         If an order book should be managed by the data engine based on the subscribed feed.
-    interval_ms : int, optional, default 1000
+    interval_ms : int, default 0 (no interval snapshots)
         The interval (milliseconds) between snapshots.
-    only_deltas : bool, optional, default True
-        If the subscription is for OrderBookDeltas or OrderBook snapshots.
     params : dict[str, object], optional
         Additional parameters for the subscription.
 
@@ -388,12 +392,13 @@ cdef class SubscribeOrderBook(SubscribeData):
     ValueError
         If both `client_id` and `venue` are both ``None`` (not enough routing info).
     ValueError
-        If `interval_ms` is not positive (> 0).
+        If `interval_ms` is negative (< 0).
     """
 
     def __init__(
         self,
         InstrumentId instrument_id not None,
+        type book_data_type,
         BookType book_type,
         ClientId client_id: ClientId | None,
         Venue venue: Venue | None,
@@ -401,13 +406,16 @@ cdef class SubscribeOrderBook(SubscribeData):
         uint64_t ts_init,
         int depth = 0,
         bint managed = True,
-        int interval_ms = 1000,
-        bint only_deltas = True,
+        int interval_ms = 0,
         dict[str, object] params: dict | None = None,
     ) -> None:
-        Condition.positive_int(interval_ms, "interval_ms")
+        Condition.is_true(
+            book_data_type in (OrderBookDelta, OrderBookDepth10),
+            f"`book_data_type` must be `OrderBookDelta` or `OrderBookDepth10`, was {book_data_type}",
+        )
+        Condition.not_negative_int(interval_ms, "interval_ms")
         super().__init__(
-            DataType(OrderBookDelta) if only_deltas else DataType(OrderBook),
+            DataType(book_data_type),
             instrument_id,
             client_id,
             venue,
@@ -419,17 +427,16 @@ cdef class SubscribeOrderBook(SubscribeData):
         self.depth = depth
         self.managed = managed
         self.interval_ms = interval_ms
-        self.only_deltas = only_deltas
 
     def __str__(self) -> str:
         return (
             f"{type(self).__name__}("
             f"instrument_id={self.instrument_id}, "
+            f"data_type={self.data_type}, "
             f"book_type={self.book_type}, "
             f"depth={self.depth}, "
             f"managed={self.managed}, "
             f"interval_ms={self.interval_ms}, "
-            f"only_deltas={self.only_deltas}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue})"
         )
@@ -438,14 +445,61 @@ cdef class SubscribeOrderBook(SubscribeData):
         return (
             f"{type(self).__name__}("
             f"instrument_id={self.instrument_id}, "
+            f"data_type={self.data_type}, "
             f"book_type={self.book_type}, "
             f"depth={self.depth}, "
             f"managed={self.managed}, "
             f"interval_ms={self.interval_ms}, "
-            f"only_deltas={self.only_deltas}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"id={self.id}{form_params_str(self.params)})"
+        )
+
+    def to_request(
+        self,
+        datetime start: datetime | None,
+        datetime end: datetime | None,
+        callback not None: Callable[[Any], None],
+    ) -> RequestOrderBookDepth:
+        """
+        Convert this subscribe message to a request message.
+
+        Parameters
+        ----------
+        start : datetime
+            The start datetime (UTC) of request time range (inclusive).
+        end : datetime
+            The end datetime (UTC) of request time range.
+            The inclusiveness depends on individual data client implementation.
+        callback : Callable[[Any], None]
+            The delegate to call with the data.
+
+        Returns
+        -------
+        RequestOrderBookDepth
+            The converted request message.
+        """
+        if self.data_type.type != OrderBookDepth10:
+            raise ValueError(
+                f"Cannot convert SubscribeOrderBook with data_type {self.data_type.type} to RequestOrderBookDepth. "
+                f"Only OrderBookDepth10 subscriptions can be converted to historical requests."
+            )
+
+        params = self.params.copy() if self.params else {}
+        params["subscription_name"] = f"{self.data_type.type.__name__}.{self.instrument_id}"
+
+        return RequestOrderBookDepth(
+            instrument_id=self.instrument_id,
+            start=start,
+            end=end,
+            limit=0,
+            depth=self.depth if self.depth > 0 else 10,
+            client_id=self.client_id,
+            venue=self.venue,
+            callback=callback,
+            request_id=self.id,
+            ts_init=self.ts_init,
+            params=params,
         )
 
 
@@ -588,7 +642,7 @@ cdef class SubscribeTradeTicks(SubscribeData):
         dict[str, object] params: dict | None = None,
     ) -> None:
         super().__init__(
-            DataType(TradeTick),
+            DataType(MarkPriceUpdate),
             instrument_id,
             client_id,
             venue,
@@ -691,7 +745,7 @@ cdef class SubscribeMarkPrices(SubscribeData):
         dict[str, object] params: dict | None = None,
     ) -> None:
         super().__init__(
-            DataType(TradeTick),
+            DataType(IndexPriceUpdate),
             instrument_id,
             client_id,
             venue,
@@ -754,7 +808,70 @@ cdef class SubscribeIndexPrices(SubscribeData):
         dict[str, object] params: dict | None = None,
     ) -> None:
         super().__init__(
-            DataType(TradeTick),
+            DataType(FundingRateUpdate),
+            instrument_id,
+            client_id,
+            venue,
+            command_id,
+            ts_init,
+            params,
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"id={self.id}{form_params_str(self.params)})"
+        )
+
+
+cdef class SubscribeFundingRates(SubscribeData):
+    """
+    Represents a command to subscribe to funding rates.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the subscription.
+    client_id : ClientId or ``None``
+        The data client ID for the command.
+    venue : Venue or ``None``
+        The venue for the command.
+    command_id : UUID4
+        The command ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object], optional
+        Additional parameters for the subscription.
+
+    Raises
+    ------
+    ValueError
+        If both `client_id` and `venue` are both ``None`` (not enough routing info).
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        UUID4 command_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None = None,
+    ) -> None:
+        super().__init__(
+            DataType(MarkPriceUpdate),
             instrument_id,
             client_id,
             venue,
@@ -797,8 +914,6 @@ cdef class SubscribeBars(SubscribeData):
         The command ID.
     ts_init : uint64_t
         UNIX timestamp (nanoseconds) when the object was initialized.
-    await_partial : bool
-        If the bar aggregator should await the arrival of a historical partial bar prior to actively aggregating new bars.
     params : dict[str, object], optional
         Additional parameters for the subscription.
 
@@ -816,7 +931,6 @@ cdef class SubscribeBars(SubscribeData):
         Venue venue: Venue | None,
         UUID4 command_id not None,
         uint64_t ts_init,
-        bint await_partial = False,
         dict[str, object] params: dict | None = None,
     ) -> None:
         super().__init__(
@@ -829,13 +943,11 @@ cdef class SubscribeBars(SubscribeData):
             params,
         )
         self.bar_type = bar_type
-        self.await_partial = await_partial
 
     def __str__(self) -> str:
         return (
             f"{type(self).__name__}("
             f"bar_type={self.bar_type}, "
-            f"await_partial={self.await_partial}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue})"
         )
@@ -844,7 +956,6 @@ cdef class SubscribeBars(SubscribeData):
         return (
             f"{type(self).__name__}("
             f"bar_type={self.bar_type}, "
-            f"await_partial={self.await_partial}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"id={self.id}{form_params_str(self.params)})"
@@ -1175,22 +1286,22 @@ cdef class UnsubscribeInstrument(UnsubscribeData):
             params,
         )
 
-        def __str__(self) -> str:
-            return (
-                f"{type(self).__name__}("
-                f"instrument_id={self.instrument_id}, "
-                f"client_id={self.client_id}, "
-                f"venue={self.venue})"
-            )
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue})"
+        )
 
-        def __repr__(self) -> str:
-            return (
-                f"{type(self).__name__}("
-                f"instrument_id={self.instrument_id}, "
-                f"client_id={self.client_id}, "
-                f"venue={self.venue}, "
-                f"id={self.id}{form_params_str(self.params)})"
-            )
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"id={self.id}{form_params_str(self.params)})"
+        )
 
 
 cdef class UnsubscribeOrderBook(UnsubscribeData):
@@ -1201,8 +1312,8 @@ cdef class UnsubscribeOrderBook(UnsubscribeData):
     ----------
     instrument_id : InstrumentId
         The instrument ID for the subscription.
-    only_deltas: bool
-        If the subscription is for OrderBookDeltas or OrderBook snapshots.
+    book_data_type : type, {``OrderBookDelta``, ``OrderBookDepth10``}
+        The data type for book updates.
     client_id : ClientId or ``None``
         The data client ID for the command.
     venue : Venue or ``None``
@@ -1224,15 +1335,19 @@ cdef class UnsubscribeOrderBook(UnsubscribeData):
     def __init__(
         self,
         InstrumentId instrument_id not None,
-        only_deltas: bool,
+        type book_data_type,
         ClientId client_id: ClientId | None,
         Venue venue: Venue | None,
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
     ) -> None:
+        Condition.is_true(
+            book_data_type in (OrderBookDelta, OrderBookDepth10),
+            f"`book_data_type` must be `OrderBookDelta` or `OrderBookDepth10`, was {book_data_type}",
+        )
         super().__init__(
-            DataType(OrderBookDelta) if only_deltas else DataType(OrderBook),
+            DataType(book_data_type),
             instrument_id,
             client_id,
             venue,
@@ -1240,13 +1355,12 @@ cdef class UnsubscribeOrderBook(UnsubscribeData):
             ts_init,
             params,
         )
-        self.only_deltas = only_deltas
 
     def __str__(self) -> str:
         return (
             f"{type(self).__name__}("
             f"instrument_id={self.instrument_id}, "
-            f"only_deltas={self.only_deltas}, "
+            f"data_type={self.data_type}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue})"
         )
@@ -1255,7 +1369,7 @@ cdef class UnsubscribeOrderBook(UnsubscribeData):
         return (
             f"{type(self).__name__}("
             f"instrument_id={self.instrument_id}, "
-            f"only_deltas={self.only_deltas}, "
+            f"data_type={self.data_type}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"id={self.id}{form_params_str(self.params)})"
@@ -1361,7 +1475,7 @@ cdef class UnsubscribeTradeTicks(UnsubscribeData):
         dict[str, object] params: dict | None = None,
     ) -> None:
         super().__init__(
-            DataType(TradeTick),
+            DataType(IndexPriceUpdate),
             instrument_id,
             client_id,
             venue,
@@ -1424,7 +1538,7 @@ cdef class UnsubscribeMarkPrices(UnsubscribeData):
         dict[str, object] params: dict | None = None,
     ) -> None:
         super().__init__(
-            DataType(TradeTick),
+            DataType(FundingRateUpdate),
             instrument_id,
             client_id,
             venue,
@@ -1454,6 +1568,69 @@ cdef class UnsubscribeMarkPrices(UnsubscribeData):
 cdef class UnsubscribeIndexPrices(UnsubscribeData):
     """
     Represents a command to unsubscribe from index prices for an instrument.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the subscription.
+    client_id : ClientId or ``None``
+        The data client ID for the command.
+    venue : Venue or ``None``
+        The venue for the command.
+    command_id : UUID4
+        The command ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object], optional
+        Additional parameters for the subscription.
+
+    Raises
+    ------
+    ValueError
+        If both `client_id` and `venue` are both ``None`` (not enough routing info).
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        UUID4 command_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None = None,
+    ) -> None:
+        super().__init__(
+            DataType(TradeTick),
+            instrument_id,
+            client_id,
+            venue,
+            command_id,
+            ts_init,
+            params,
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"id={self.id}{form_params_str(self.params)})"
+        )
+
+
+cdef class UnsubscribeFundingRates(UnsubscribeData):
+    """
+    Represents a command to unsubscribe from funding rates for an instrument.
 
     Parameters
     ----------
@@ -2062,6 +2239,115 @@ cdef class RequestOrderBookSnapshot(RequestData):
         )
 
 
+cdef class RequestOrderBookDepth(RequestData):
+    """
+    Represents a request for historical `OrderBookDepth10` data.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the request.
+    start : datetime
+        The start datetime (UTC) of request time range (inclusive).
+    end : datetime
+        The end datetime (UTC) of request time range.
+        The inclusiveness depends on individual data client implementation.
+    limit : int
+        The limit on the amount of depth snapshots received.
+    depth : int
+        The maximum depth for the order book depth data (default is 10).
+    client_id : ClientId or ``None``
+        The data client ID for the request.
+    venue : Venue or ``None``
+        The venue for the request.
+    callback : Callable[[Any], None]
+        The delegate to call with the data.
+    request_id : UUID4
+        The request ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object]
+        Additional parameters for the request.
+
+    Raises
+    ------
+    ValueError
+        If both `client_id` and `venue` are both ``None`` (not enough routing info).
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        datetime start : datetime | None,
+        datetime end : datetime | None,
+        int limit,
+        int depth,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        callback not None: Callable[[Any], None],
+        UUID4 request_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None,
+    ) -> None:
+        super().__init__(
+            DataType(OrderBookDepth10),
+            instrument_id,
+            start,
+            end,
+            limit,
+            client_id,
+            venue,
+            callback,
+            request_id,
+            ts_init,
+            params
+        )
+        self.depth = depth
+
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init):
+        return RequestOrderBookDepth(
+            instrument_id=self.instrument_id,
+            start=start,
+            end=end,
+            limit=self.limit,
+            depth=self.depth,
+            client_id=self.client_id,
+            venue=self.venue,
+            callback=self.callback,
+            request_id=self.id,
+            ts_init=ts_init,
+            params=self.params.copy(),
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"start={self.start}, "
+            f"end={self.end}, "
+            f"limit={self.limit}, "
+            f"depth={self.depth}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"data_type={self.data_type}{form_params_str(self.params)})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"start={self.start}, "
+            f"end={self.end}, "
+            f"limit={self.limit}, "
+            f"depth={self.depth}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"callback={self.callback}, "
+            f"id={self.id}{form_params_str(self.params)})"
+        )
+
+
 cdef class RequestQuoteTicks(RequestData):
     """
     Represents a request for quote ticks.
@@ -2388,6 +2674,10 @@ cdef class DataResponse(Response):
         The response ID.
     ts_init : uint64_t
         UNIX timestamp (nanoseconds) when the object was initialized.
+    start : datetime
+        The start datetime (UTC) of response time range (inclusive).
+    end : datetime
+        The end datetime (UTC) of response time range (inclusive).
     params : dict[str, object], optional
         Additional parameters for the response.
 
@@ -2407,6 +2697,8 @@ cdef class DataResponse(Response):
             UUID4 correlation_id not None,
             UUID4 response_id not None,
             uint64_t ts_init,
+            datetime start,
+            datetime end,
             dict[str, object] params: dict | None = None,
     ) -> None:
         Condition.is_true(client_id or venue, "Both `client_id` and `venue` were None")
@@ -2420,6 +2712,8 @@ cdef class DataResponse(Response):
         self.venue = venue
         self.data_type = data_type
         self.data = data
+        self.start = start
+        self.end = end
         self.params = params or {}
 
     def __str__(self) -> str:

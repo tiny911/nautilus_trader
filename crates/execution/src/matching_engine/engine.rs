@@ -254,7 +254,7 @@ impl OrderMatchingEngine {
             self.book.apply_delta(delta);
         }
 
-        self.iterate(delta.ts_event);
+        self.iterate(delta.ts_init);
     }
 
     pub fn process_order_book_deltas(&mut self, deltas: &OrderBookDeltas) {
@@ -264,7 +264,7 @@ impl OrderMatchingEngine {
             self.book.apply_deltas(deltas);
         }
 
-        self.iterate(deltas.ts_event);
+        self.iterate(deltas.ts_init);
     }
 
     /// # Panics
@@ -277,7 +277,7 @@ impl OrderMatchingEngine {
             self.book.update_quote_tick(quote).unwrap();
         }
 
-        self.iterate(quote.ts_event);
+        self.iterate(quote.ts_init);
     }
 
     /// # Panics
@@ -361,8 +361,8 @@ impl OrderMatchingEngine {
             size,
             aggressor_side,
             self.ids_generator.generate_trade_id(),
-            bar.ts_event,
-            bar.ts_event,
+            bar.ts_init,
+            bar.ts_init,
         );
 
         // Open
@@ -424,7 +424,7 @@ impl OrderMatchingEngine {
         // Wait for next bar
         if self.last_bar_bid.is_none()
             || self.last_bar_ask.is_none()
-            || self.last_bar_bid.unwrap().ts_event != self.last_bar_ask.unwrap().ts_event
+            || self.last_bar_bid.unwrap().ts_init != self.last_bar_ask.unwrap().ts_init
         {
             return;
         }
@@ -482,7 +482,7 @@ impl OrderMatchingEngine {
         }
         self.core.set_last_raw(trade.price);
 
-        self.iterate(trade.ts_event);
+        self.iterate(trade.ts_init);
     }
 
     pub fn process_status(&mut self, action: MarketStatusAction) {
@@ -615,7 +615,7 @@ impl OrderMatchingEngine {
                 }
             }
 
-            // Check fo valid order quantity precision
+            // Check for valid order quantity precision
             if order.quantity().precision != self.instrument.size_precision() {
                 self.generate_order_rejected(
                     order,
@@ -778,10 +778,11 @@ impl OrderMatchingEngine {
     }
 
     pub fn process_cancel_all(&mut self, command: &CancelAllOrders, account_id: AccountId) {
+        let instrument_id = command.instrument_id;
         let open_orders = self
             .cache
             .borrow()
-            .orders_open(None, Some(&command.instrument_id), None, None)
+            .orders_open(None, Some(&instrument_id), None, None)
             .into_iter()
             .cloned()
             .collect::<Vec<OrderAny>>();
@@ -1106,31 +1107,119 @@ impl OrderMatchingEngine {
         self.iterate_orders(timestamp_ns, &orders_ask);
     }
 
+    fn maybe_activate_trailing_stop(
+        &mut self,
+        order: &mut OrderAny,
+        bid: Option<Price>,
+        ask: Option<Price>,
+    ) -> bool {
+        match order {
+            OrderAny::TrailingStopMarket(inner) => {
+                if inner.is_activated {
+                    return true;
+                }
+
+                if inner.activation_price.is_none() {
+                    let px = match inner.order_side() {
+                        OrderSide::Buy => ask,
+                        OrderSide::Sell => bid,
+                        _ => None,
+                    };
+                    if let Some(p) = px {
+                        inner.activation_price = Some(p);
+                        inner.set_activated();
+                        if let Err(e) = self.cache.borrow_mut().update_order(order) {
+                            log::error!("Failed to update order: {e}");
+                        }
+                        return true;
+                    }
+                    return false;
+                }
+
+                let activation_price = inner.activation_price.unwrap();
+                let hit = match inner.order_side() {
+                    OrderSide::Buy => ask.is_some_and(|a| a <= activation_price),
+                    OrderSide::Sell => bid.is_some_and(|b| b >= activation_price),
+                    _ => false,
+                };
+                if hit {
+                    inner.set_activated();
+                    if let Err(e) = self.cache.borrow_mut().update_order(order) {
+                        log::error!("Failed to update order: {e}");
+                    }
+                }
+                hit
+            }
+            OrderAny::TrailingStopLimit(inner) => {
+                if inner.is_activated {
+                    return true;
+                }
+
+                if inner.activation_price.is_none() {
+                    let px = match inner.order_side() {
+                        OrderSide::Buy => ask,
+                        OrderSide::Sell => bid,
+                        _ => None,
+                    };
+                    if let Some(p) = px {
+                        inner.activation_price = Some(p);
+                        inner.set_activated();
+                        if let Err(e) = self.cache.borrow_mut().update_order(order) {
+                            log::error!("Failed to update order: {e}");
+                        }
+                        return true;
+                    }
+                    return false;
+                }
+
+                let activation_price = inner.activation_price.unwrap();
+                let hit = match inner.order_side() {
+                    OrderSide::Buy => ask.is_some_and(|a| a <= activation_price),
+                    OrderSide::Sell => bid.is_some_and(|b| b >= activation_price),
+                    _ => false,
+                };
+                if hit {
+                    inner.set_activated();
+                    if let Err(e) = self.cache.borrow_mut().update_order(order) {
+                        log::error!("Failed to update order: {e}");
+                    }
+                }
+                hit
+            }
+            _ => true,
+        }
+    }
+
     fn iterate_orders(&mut self, timestamp_ns: UnixNanos, orders: &[PassiveOrderAny]) {
         for order in orders {
             if order.is_closed() {
                 continue;
             }
 
-            // Check expiration
             if self.config.support_gtd_orders
-                && let Some(expire_time) = order.expire_time()
-                && timestamp_ns >= expire_time
+                && order
+                    .expire_time()
+                    .is_some_and(|expire_timestamp_ns| timestamp_ns >= expire_timestamp_ns)
             {
-                // SAFTEY: We know this order is in the core
-                self.core.delete_order(order).unwrap();
+                let _ = self.core.delete_order(order);
                 self.cached_filled_qty.remove(&order.client_order_id());
                 self.expire_order(order);
+                continue;
             }
 
-            // Manage trailing stop
-            if let PassiveOrderAny::Stop(o) = order
-                && let PassiveOrderAny::Stop(
-                    StopOrderAny::TrailingStopMarket(_) | StopOrderAny::TrailingStopLimit(_),
-                ) = order
-            {
-                let mut order = OrderAny::from(o.to_owned());
-                self.update_trailing_stop_order(&mut order);
+            if matches!(
+                order,
+                PassiveOrderAny::Stop(
+                    StopOrderAny::TrailingStopMarket(_) | StopOrderAny::TrailingStopLimit(_)
+                )
+            ) {
+                let mut any = OrderAny::from(order.clone());
+
+                if !self.maybe_activate_trailing_stop(&mut any, self.core.bid, self.core.ask) {
+                    continue;
+                }
+
+                self.update_trailing_stop_order(&mut any);
             }
 
             // Move market back to targets
@@ -1138,11 +1227,15 @@ impl OrderMatchingEngine {
                 self.core.bid = Some(target_bid);
                 self.target_bid = None;
             }
-            if let Some(target_ask) = self.target_ask {
+            if let Some(target_bid) = self.target_bid.take() {
+                self.core.bid = Some(target_bid);
+                self.target_bid = None;
+            }
+            if let Some(target_ask) = self.target_ask.take() {
                 self.core.ask = Some(target_ask);
                 self.target_ask = None;
             }
-            if let Some(target_last) = self.target_last {
+            if let Some(target_last) = self.target_last.take() {
                 self.core.last = Some(target_last);
                 self.target_last = None;
             }
@@ -1450,6 +1543,10 @@ impl OrderMatchingEngine {
             }
 
             // Check reduce only order
+            // If the incoming simulated fill would exceed the position when reduce-only is honored,
+            // clamp the effective fill size to the adjusted (remaining position) quantity.
+            let mut effective_fill_qty = *fill_qty;
+
             if self.config.use_reduce_only
                 && order.is_reduce_only()
                 && let Some(position) = &position
@@ -1460,11 +1557,17 @@ impl OrderMatchingEngine {
                     return;
                 }
 
-                // Adjust fill to honor reduce only execution (fill remaining position size only)
+                // Adjusted target quantity equals the remaining position size
                 let adjusted_fill_qty =
                     Quantity::from_raw(position.quantity.raw, fill_qty.precision);
 
-                self.generate_order_updated(order, adjusted_fill_qty, None, None);
+                // Determine the effective fill size for this iteration first
+                effective_fill_qty = std::cmp::min(effective_fill_qty, adjusted_fill_qty);
+
+                // Only emit an update if the order quantity actually changes
+                if order.quantity() != adjusted_fill_qty {
+                    self.generate_order_updated(order, adjusted_fill_qty, None, None);
+                }
             }
 
             if fill_qty.is_zero() {
@@ -1480,7 +1583,7 @@ impl OrderMatchingEngine {
             self.fill_order(
                 order,
                 fill_px,
-                *fill_qty,
+                effective_fill_qty,
                 liquidity_side,
                 venue_position_id,
                 position.clone(),
@@ -1560,9 +1663,9 @@ impl OrderMatchingEngine {
         if order.is_passive() && order.is_closed() {
             // Check if order exists in OrderMatching core, and delete it if it does
             if self.core.order_exists(order.client_order_id()) {
-                let _ = self
-                    .core
-                    .delete_order(&PassiveOrderAny::from(order.clone()));
+                let _ = self.core.delete_order(
+                    &PassiveOrderAny::try_from(order.clone()).expect("passive order conversion"),
+                );
             }
             self.cached_filled_qty.remove(&order.client_order_id());
         }
@@ -1950,6 +2053,8 @@ impl OrderMatchingEngine {
     fn update_trailing_stop_order(&mut self, order: &mut OrderAny) {
         let (new_trigger_price, new_price) = trailing_stop_calculate(
             self.instrument.price_increment(),
+            order.trigger_price(),
+            order.activation_price(),
             order,
             self.core.bid,
             self.core.ask,
@@ -1984,7 +2089,9 @@ impl OrderMatchingEngine {
             }
         }
 
-        let _ = self.core.add_order(order.to_owned().into());
+        let _ = self.core.add_order(
+            PassiveOrderAny::try_from(order.to_owned()).expect("passive order conversion"),
+        );
     }
 
     fn expire_order(&mut self, order: &PassiveOrderAny) {
@@ -2011,9 +2118,9 @@ impl OrderMatchingEngine {
 
         // Check if order exists in OrderMatching core, and delete it if it does
         if self.core.order_exists(order.client_order_id()) {
-            let _ = self
-                .core
-                .delete_order(&PassiveOrderAny::from(order.clone()));
+            let _ = self.core.delete_order(
+                &PassiveOrderAny::try_from(order.clone()).expect("passive order conversion"),
+            );
         }
         self.cached_filled_qty.remove(&order.client_order_id());
 
@@ -2151,6 +2258,9 @@ impl OrderMatchingEngine {
             .account_id()
             .unwrap_or(self.account_ids.get(&order.trader_id()).unwrap().to_owned());
 
+        // Check if rejection is due to post-only
+        let due_post_only = reason.as_str().starts_with("POST_ONLY");
+
         let event = OrderEventAny::Rejected(OrderRejected::new(
             order.trader_id(),
             order.strategy_id(),
@@ -2162,6 +2272,7 @@ impl OrderMatchingEngine {
             ts_now,
             ts_now,
             false,
+            due_post_only,
         ));
         msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
     }

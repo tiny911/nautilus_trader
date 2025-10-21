@@ -17,7 +17,7 @@ cdef extern from "../includes/core.h":
     const uint64_t NANOSECONDS_IN_MICROSECOND # = 1000
 
     # `CVec` is a C compatible struct that stores an opaque pointer to a block of
-    # memory, it's length and the capacity of the vector it was allocated from.
+    # memory, its length and the capacity of the vector it was allocated from.
     #
     # # Safety
     #
@@ -37,15 +37,6 @@ cdef extern from "../includes/core.h":
     cdef struct UUID4_t:
         # The UUID v4 value as a fixed-length C string byte array (includes null terminator).
         uint8_t value[37];
-
-    # Free the heap allocation represented by `cvec`.
-    #
-    # # Safety
-    #
-    # The pointer **must** either originate from the Rust side through the `From<Vec<T>>`
-    # implementation or be the return value of one of the exported functions in this module.  It is
-    # undefined behaviour to pass an arbitrary or already-freed pointer.
-    void cvec_drop(CVec cvec);
 
     # Construct a new *empty* [`CVec`] value for use as initialiser/sentinel in foreign code.
     CVec cvec_new();

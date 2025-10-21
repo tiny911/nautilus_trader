@@ -68,33 +68,34 @@ impl DatabentoLiveClient {
 
     async fn process_messages(
         mut msg_rx: tokio::sync::mpsc::Receiver<LiveMessage>,
-        callback: PyObject,
-        callback_pyo3: PyObject,
+        callback: Py<PyAny>,
+        callback_pyo3: Py<PyAny>,
     ) -> PyResult<()> {
         tracing::debug!("Processing messages...");
         // Continue to process messages until channel is hung up
         while let Some(msg) = msg_rx.recv().await {
             tracing::trace!("Received message: {msg:?}");
+
             match msg {
-                LiveMessage::Data(data) => Python::with_gil(|py| {
+                LiveMessage::Data(data) => Python::attach(|py| {
                     let py_obj = data_to_pycapsule(py, data);
                     call_python(py, &callback, py_obj);
                 }),
                 LiveMessage::Instrument(data) => {
-                    Python::with_gil(|py| match instrument_any_to_pyobject(py, data) {
+                    Python::attach(|py| match instrument_any_to_pyobject(py, data) {
                         Ok(py_obj) => call_python(py, &callback, py_obj),
                         Err(e) => tracing::error!("Failed creating instrument: {e}"),
                     });
                 }
-                LiveMessage::Status(data) => Python::with_gil(|py| {
+                LiveMessage::Status(data) => Python::attach(|py| {
                     let py_obj = data.into_py_any_unwrap(py);
                     call_python(py, &callback_pyo3, py_obj);
                 }),
-                LiveMessage::Imbalance(data) => Python::with_gil(|py| {
+                LiveMessage::Imbalance(data) => Python::attach(|py| {
                     let py_obj = data.into_py_any_unwrap(py);
                     call_python(py, &callback_pyo3, py_obj);
                 }),
-                LiveMessage::Statistics(data) => Python::with_gil(|py| {
+                LiveMessage::Statistics(data) => Python::attach(|py| {
                     let py_obj = data.into_py_any_unwrap(py);
                     call_python(py, &callback_pyo3, py_obj);
                 }),
@@ -120,7 +121,7 @@ impl DatabentoLiveClient {
     }
 }
 
-fn call_python(py: Python, callback: &PyObject, py_obj: PyObject) {
+fn call_python(py: Python, callback: &Py<PyAny>, py_obj: Py<PyAny>) {
     if let Err(e) = callback.call1(py, (py_obj,)) {
         // TODO: Improve this by checking for the actual exception type
         if !e.to_string().contains("CancelledError") {
@@ -152,7 +153,7 @@ impl DatabentoLiveClient {
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<LiveCommand>();
 
-        // Hard-coded to a reasonable size for now
+        // Hardcoded to a reasonable size for now
         let buffer_size = 100_000;
 
         Ok(Self {
@@ -225,8 +226,8 @@ impl DatabentoLiveClient {
     fn py_start<'py>(
         &mut self,
         py: Python<'py>,
-        callback: PyObject,
-        callback_pyo3: PyObject,
+        callback: Py<PyAny>,
+        callback_pyo3: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if self.is_closed {
             return Err(to_pyruntime_err("Client already closed"));

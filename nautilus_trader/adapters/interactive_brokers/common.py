@@ -121,6 +121,7 @@ class IBContract(NautilusConfig, frozen=True, repr_omit_defaults=True):
         "CFD",
         "CMDTY",
         "IND",
+        "BAG",
         "",
     ] = ""
     conId: int = 0
@@ -187,6 +188,16 @@ class IBOrderTags(NautilusConfig, frozen=True, repr_omit_defaults=True):
     blockOrder = False  # If set to true, specifies that the order is an ISE Block order.
     sweepToFill = False
     outsideRth: bool = False
+
+    # If set to true, the order will not be visible when viewing the market depth.
+    # This option only applies to orders routed to the NASDAQ exchange.
+    hidden: bool = False
+
+    # Order conditions
+    conditions: list[dict] = []  # List of condition dictionaries
+    conditionsCancelOrder: bool = (
+        False  # True = cancel order when condition met, False = transmit order
+    )
 
     @property
     def value(self):

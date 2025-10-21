@@ -15,7 +15,7 @@
 
 //! Live system node for [NautilusTrader](http://nautilustrader.io).
 //!
-//! The *live* crate provides high-level abstractions and infrastructure for running live trading
+//! The `nautilus-live` crate provides high-level abstractions and infrastructure for running live trading
 //! systems, including data streaming, execution management, and system lifecycle handling.
 //! It builds on top of the system kernel to provide simplified interfaces for live deployment:
 //!
@@ -43,6 +43,7 @@
 //! - `ffi`: Enables the C foreign function interface (FFI) from [cbindgen](https://github.com/mozilla/cbindgen).
 //! - `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
 //! - `defi`: Enables DeFi (Decentralized Finance) support.
+//! - `extension-module`: Builds the crate as a Python extension module.
 
 #![warn(rustc::all)]
 #![deny(unsafe_code)]
@@ -54,5 +55,10 @@
 
 pub mod config;
 pub mod data;
+pub mod execution;
 pub mod node;
+pub mod reconciliation;
 pub mod runner;
+
+#[cfg(feature = "python")]
+pub mod python;

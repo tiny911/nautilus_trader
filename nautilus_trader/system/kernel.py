@@ -15,10 +15,10 @@
 
 import asyncio
 import concurrent.futures
-import os
 import platform
 import signal
 import socket
+import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -89,10 +89,13 @@ from nautilus_trader.trading.trader import Trader
 
 try:
     import uvloop
-
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 except ImportError:  # pragma: no cover
     uvloop = None
+
+# Only set uvloop policy if not running in test environment,
+# pytest-asyncio manages the event loop policy for tests via event_loop_policy fixture.
+if uvloop is not None and "pytest" not in sys.modules:
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 
 class NautilusKernel:
@@ -126,7 +129,7 @@ class NautilusKernel:
 
     """
 
-    def __init__(  # noqa (too complex)
+    def __init__(  # noqa: C901 (too complex)
         self,
         name: str,
         config: NautilusKernelConfig,
@@ -189,9 +192,6 @@ class NautilusKernel:
                 file_path.open("w").close()
 
         if not is_logging_initialized():
-            if "RUST_LOG" not in os.environ:
-                os.environ["RUST_LOG"] = "off"
-
             if not logging.bypass_logging:
                 if logging.use_pyo3:
                     set_logging_pyo3(True)
@@ -205,6 +205,7 @@ class NautilusKernel:
                         instance_id=nautilus_pyo3.UUID4.from_str(self._instance_id.value),
                         level_stdout=nautilus_pyo3.LogLevel(logging.log_level),
                         level_file=nautilus_pyo3.LogLevel(logging.log_level_file or "OFF"),
+                        component_levels=logging.log_component_levels,
                         directory=logging.log_directory,
                         file_name=logging.log_file_name,
                         file_format=logging.log_file_format,
@@ -216,6 +217,7 @@ class NautilusKernel:
                         is_colored=logging.log_colors,
                         is_bypassed=logging.bypass_logging,
                         print_config=logging.print_config,
+                        log_components_only=logging.log_components_only,
                     )
                     nautilus_pyo3.log_header(
                         trader_id=nautilus_pyo3.TraderId(self._trader_id.value),
@@ -242,6 +244,7 @@ class NautilusKernel:
                         colors=logging.log_colors,
                         bypass=logging.bypass_logging,
                         print_config=logging.print_config,
+                        log_components_only=logging.log_components_only,
                         max_file_size=logging.log_file_max_size or 0,
                         max_backup_count=logging.log_file_max_backup_count,
                     )
@@ -307,7 +310,7 @@ class NautilusKernel:
                 instance_id=self._instance_id,
                 serializer=MsgSpecSerializer(
                     encoding=msgspec.msgpack if encoding == "msgpack" else msgspec.json,
-                    timestamps_as_str=True,  # Hard-coded for now
+                    timestamps_as_str=True,  # Hardcoded for now
                     timestamps_as_iso8601=config.cache.timestamps_as_iso8601,
                 ),
                 config=config.cache,
@@ -328,7 +331,7 @@ class NautilusKernel:
             encoding = config.message_bus.encoding.lower()
             self._msgbus_serializer = MsgSpecSerializer(
                 encoding=msgspec.msgpack if encoding == "msgpack" else msgspec.json,
-                timestamps_as_str=True,  # Hard-coded for now
+                timestamps_as_str=True,  # Hardcoded for now
                 timestamps_as_iso8601=config.message_bus.timestamps_as_iso8601,
             )
 
@@ -482,9 +485,6 @@ class NautilusKernel:
             loop=self._loop,
         )
 
-        if self._load_state:
-            self._trader.load()
-
         # Add controller
         self._controller: Controller | None = None
 
@@ -511,6 +511,7 @@ class NautilusKernel:
                     path=catalog_config.path,
                     fs_protocol=catalog_config.fs_protocol,
                     fs_storage_options=catalog_config.fs_storage_options,
+                    fs_rust_storage_options=catalog_config.fs_rust_storage_options,
                 )
                 used_catalog_name = catalog_config.name
 
@@ -531,6 +532,9 @@ class NautilusKernel:
             strategy: Strategy = StrategyFactory.create(strategy_config)
             self._trader.add_strategy(strategy)
 
+        if self._load_state:
+            self._trader.load()
+
         # Create importable execution algorithms
         for exec_algorithm_config in config.exec_algorithms:
             exec_algorithm: ExecAlgorithm = ExecAlgorithmFactory.create(exec_algorithm_config)
@@ -540,7 +544,8 @@ class NautilusKernel:
         self._is_running = False
         self._is_stopping = False
 
-        build_time_ms = nanos_to_millis(time.time_ns() - ts_build)
+        build_time_ns = time.time_ns() - ts_build
+        build_time_ms = nanos_to_millis(build_time_ns) if build_time_ns > 0 else 0
         self._log.info(f"Initialized in {build_time_ms}ms")
 
     def __del__(self) -> None:
@@ -1013,8 +1018,11 @@ class NautilusKernel:
         if not await self._await_engines_connected():
             return
 
-        if not await self._await_execution_reconciliation():
-            return
+        if self.exec_engine.reconciliation:
+            if not await self._await_execution_reconciliation():
+                return
+        else:
+            self._log.warning("Reconciliation deactivated")
 
         self._emulator.start()
         self._initialize_portfolio()
@@ -1098,6 +1106,11 @@ class NautilusKernel:
         Calling this method multiple times has the same effect as calling it once (it is
         idempotent). Once called, it cannot be reversed, and no other methods should be
         called on this instance.
+
+        Notes
+        -----
+        The log guard is intentionally not disposed to support running multiple engines
+        sequentially without re-initializing logging.
 
         """
         self._stop_engines()
@@ -1318,7 +1331,7 @@ class NautilusKernel:
             color=LogColor.BLUE,
         )
 
-        if not await self._exec_engine.reconcile_state(
+        if not await self._exec_engine.reconcile_execution_state(
             timeout_secs=self._config.timeout_reconciliation,
         ):
             self._log.error("Execution state could not be reconciled")

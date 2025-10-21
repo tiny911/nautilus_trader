@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 
-from nautilus_trader.backtest.exchange import SimulatedExchange
+from nautilus_trader.backtest.engine import SimulatedExchange
 from nautilus_trader.backtest.execution_client import BacktestExecClient
 from nautilus_trader.backtest.models import FillModel
 from nautilus_trader.backtest.models import LatencyModel
@@ -1272,7 +1272,7 @@ class TestSimulatedExchange:
         assert trailing_stop.events[-1].last_qty == Quantity.from_int(100_000)
         assert trailing_stop.avg_px == Decimal("12")
 
-    def test_trailing_stop_market_order_buy_fill_when_quanity_exceeds_top_level(
+    def test_trailing_stop_market_order_buy_fill_when_quantity_exceeds_top_level(
         self,
     ) -> None:
         # Arrange: Prepare market
@@ -1315,7 +1315,7 @@ class TestSimulatedExchange:
         assert trailing_stop.events[-2].last_qty == Quantity.from_int(100_000)
         assert trailing_stop.events[-1].last_qty == Quantity.from_int(100_000)
 
-    def test_trailing_stop_market_order_sell_fill_when_quanity_exceeds_top_level(self) -> None:
+    def test_trailing_stop_market_order_sell_fill_when_quantity_exceeds_top_level(self) -> None:
         # Arrange: Prepare market
         quote1 = TestDataStubs.quote_tick(
             instrument=USDJPY_SIM,

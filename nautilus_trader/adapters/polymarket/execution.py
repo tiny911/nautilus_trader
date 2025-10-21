@@ -22,6 +22,7 @@ from typing import Any
 import msgspec
 from py_clob_client.client import BalanceAllowanceParams
 from py_clob_client.client import ClobClient
+from py_clob_client.client import MarketOrderArgs
 from py_clob_client.client import OpenOrderParams
 from py_clob_client.client import OrderArgs
 from py_clob_client.client import PartialCreateOrderOptions
@@ -31,15 +32,12 @@ from py_clob_client.exceptions import PolyApiException
 
 from nautilus_trader.adapters.polymarket.common.cache import get_polymarket_trades_key
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_INVALID_API_KEY
-from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_MAX_PRICE
-from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_MIN_PRICE
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
 from nautilus_trader.adapters.polymarket.common.constants import VALID_POLYMARKET_TIME_IN_FORCE
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
 from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWebSocketAuth
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketEventType
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
-from nautilus_trader.adapters.polymarket.common.parsing import parse_order_side
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_condition_id
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_instrument_id
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_token_id
@@ -71,6 +69,7 @@ from nautilus_trader.execution.messages import GenerateFillReports
 from nautilus_trader.execution.messages import GenerateOrderStatusReport
 from nautilus_trader.execution.messages import GenerateOrderStatusReports
 from nautilus_trader.execution.messages import GeneratePositionStatusReports
+from nautilus_trader.execution.messages import QueryAccount
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.execution.reports import OrderStatusReport
@@ -310,6 +309,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             params = None
 
         # Check active orders with venue
+        # Note: py_clob_client.get_orders() handles pagination internally
         retry_manager = await self._retry_manager_pool.acquire()
         try:
             response: list[JSON] | None = await retry_manager.run(
@@ -318,11 +318,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 asyncio.to_thread,
                 self._http_client.get_orders,
                 params=params,
-                # TODO: Handle cursor for lookback
             )
             if response:
                 # Uncomment for development
-                # self._log.info(str(response), LogColor.MAGENTA)
+                # self._log.info(f"Processing {len(response)} orders", LogColor.MAGENTA)
                 for json_obj in response:
                     raw = msgspec.json.encode(json_obj)
                     polymarket_order = self._decoder_order_report.decode(raw)
@@ -479,7 +478,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
     ) -> OrderStatusReport | None:
         await self._maintain_active_market(command.instrument_id)
 
-        if command.venue_order_id is None:
+        venue_order_id = command.venue_order_id
+        if venue_order_id is None:
             venue_order_id = self._cache.venue_order_id(command.client_order_id)
             if venue_order_id is None:
                 self._log.error(
@@ -497,10 +497,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
         try:
             response: JSON | None = await retry_manager.run(
                 "generate_order_status_report",
-                [command.client_order_id, command.venue_order_id],
+                [command.client_order_id, venue_order_id],
                 asyncio.to_thread,
                 self._http_client.get_order,
-                order_id=command.venue_order_id.value,
+                order_id=venue_order_id.value,
             )
             if not response:
                 return None
@@ -546,6 +546,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         if command.instrument_id:
             details.append(command.instrument_id)
 
+        # Note: py_clob_client.get_trades() handles pagination internally
         retry_manager = await self._retry_manager_pool.acquire()
         try:
             response: JSON | None = await retry_manager.run(
@@ -557,7 +558,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             )
             if response:
                 # Uncomment for development
-                # self._log.info(str(response), LogColor.MAGENTA)
+                # self._log.info(f"Processing {len(response)} trades", LogColor.MAGENTA)
                 trade_ids: set[TradeId] = set()
                 for json_obj in response:
                     raw = msgspec.json.encode(json_obj)
@@ -643,6 +644,15 @@ class PolymarketExecutionClient(LiveExecutionClient):
         return reports
 
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
+
+    def _get_neg_risk_for_instrument(self, instrument) -> bool:
+        if instrument is None or instrument.info is None:
+            return False
+        return instrument.info.get("neg_risk", False)
+
+    async def _query_account(self, _command: QueryAccount) -> None:
+        # Specific account ID (sub account) not yet supported
+        await self._update_account_state()
 
     async def _cancel_order(self, command: CancelOrder) -> None:
         # https://docs.polymarket.com/#cancel-an-order
@@ -809,71 +819,73 @@ class PolymarketExecutionClient(LiveExecutionClient):
             )
             return  # TODO: Change to deny after next release
 
+        instrument = self._cache.instrument(order.instrument_id)
+
         if order.order_type == OrderType.MARKET:
-            await self._submit_market_order(command)
+            await self._submit_market_order(command, instrument)
         elif order.order_type == OrderType.LIMIT:
-            await self._submit_limit_order(command)
+            await self._submit_limit_order(command, instrument)
         else:
             self._log.error(
                 f"Order type {order.type_string()} not supported on Polymarket, "
                 "use either MARKET, LIMIT",
             )
 
-    # TODO: Submitting native market orders is under development
-    async def _submit_market_order(self, command: SubmitOrder) -> None:
+    def _deny_market_order_quantity(self, order: Order, reason: str) -> None:
+        self._log.error(
+            f"Cannot submit market order {order.client_order_id}: {reason}",
+            LogColor.RED,
+        )
+        self.generate_order_denied(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=order.client_order_id,
+            reason=reason,
+            ts_event=self._clock.timestamp_ns(),
+        )
+
+    async def _submit_market_order(self, command: SubmitOrder, instrument) -> None:
         self._log.debug("Creating Polymarket order", LogColor.MAGENTA)
 
         order = command.order
 
-        # --------------------------------------------------------------------------------------
-        # MARKET ORDER CHANGE
-        # --------------------------------------------------------------------------------------
-        # if order.quantity.precision > POLYMARKET_MAX_PRECISION_TAKER:
-        #     self._log.error(
-        #         f"Market order quantity max precision {POLYMARKET_MAX_PRECISION_TAKER} on Polymarket, "
-        #         f"was {order.quantity.precision}",
-        #     )
-        #     return  # TODO: Change to deny after next release
+        if order.side == OrderSide.BUY:
+            if not order.is_quote_quantity:
+                self._deny_market_order_quantity(
+                    order,
+                    "Polymarket market BUY orders require quote-denominated quantities; "
+                    "resubmit with `quote_quantity=True`",
+                )
+                return
+        else:
+            if order.is_quote_quantity:
+                self._deny_market_order_quantity(
+                    order,
+                    "Polymarket market SELL orders require base-denominated quantities; "
+                    "resubmit with `quote_quantity=False`",
+                )
+                return
 
-        # amount = round(order.quantity, POLYMARKET_MAX_PRECISION_TAKER)
+        amount = float(order.quantity)
+        order_type = convert_tif_to_polymarket_order_type(order.time_in_force)
 
-        # # Create signed Polymarket market order
-        # market_order_args = MarketOrderArgs(
-        #     token_id=get_polymarket_token_id(order.instrument_id),
-        #     amount=amount,
-        #     side=order_side_to_str(order.side),
-        #     price=0,  # True market order
-        #     order_type=convert_tif_to_polymarket_order_type(order.time_in_force),
-        # )
-        # options = PartialCreateOrderOptions(neg_risk=False)
-        # signing_start = self._clock.timestamp()
-        # signed_order = await asyncio.to_thread(
-        #     self._http_client.create_market_order,
-        #     market_order_args,
-        #     options=options,
-        # )
-        # interval = self._clock.timestamp() - signing_start
-        # self._log.info(f"Signed Polymarket market order in {interval:.3f}s", LogColor.BLUE)
-        # --------------------------------------------------------------------------------------
-
-        price = POLYMARKET_MAX_PRICE if order.side == OrderSide.BUY else POLYMARKET_MIN_PRICE
-
-        # Create signed Polymarket limit order for now
-        order_args = OrderArgs(
-            price=price,
+        market_order_args = MarketOrderArgs(
             token_id=get_polymarket_token_id(order.instrument_id),
-            size=float(order.quantity),
+            amount=amount,
             side=order_side_to_str(order.side),
+            order_type=order_type,
         )
-        options = PartialCreateOrderOptions(neg_risk=False)
+
+        neg_risk = self._get_neg_risk_for_instrument(instrument)
+        options = PartialCreateOrderOptions(neg_risk=neg_risk)
         signing_start = self._clock.timestamp()
         signed_order = await asyncio.to_thread(
-            self._http_client.create_order,
-            order_args,
+            self._http_client.create_market_order,
+            market_order_args,
             options=options,
         )
         interval = self._clock.timestamp() - signing_start
-        self._log.info(f"Signed Polymarket order in {interval:.3f}s", LogColor.BLUE)
+        self._log.info(f"Signed Polymarket market order in {interval:.3f}s", LogColor.BLUE)
 
         self.generate_order_submitted(
             strategy_id=order.strategy_id,
@@ -884,7 +896,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         await self._post_signed_order(order, signed_order)
 
-    async def _submit_limit_order(self, command: SubmitOrder) -> None:
+    async def _submit_limit_order(self, command: SubmitOrder, instrument) -> None:
         self._log.debug("Creating Polymarket order", LogColor.MAGENTA)
 
         order = command.order
@@ -897,7 +909,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
             side=order_side_to_str(order.side),
             expiration=int(nanos_to_secs(order.expire_time_ns)),
         )
-        options = PartialCreateOrderOptions(neg_risk=False)
+
+        neg_risk = self._get_neg_risk_for_instrument(instrument)
+        options = PartialCreateOrderOptions(neg_risk=neg_risk)
         signing_start = self._clock.timestamp()
         signed_order = await asyncio.to_thread(
             self._http_client.create_order,
@@ -953,15 +967,14 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     color=LogColor.MAGENTA,
                 )
 
-            ws_message = self._decoder_user_msg.decode(raw)
-            for msg in ws_message:
-                if isinstance(msg, PolymarketUserOrder):
-                    self._handle_ws_order_msg(msg, wait_for_ack=True)
-                elif isinstance(msg, PolymarketUserTrade):
-                    self._add_trade_to_cache(msg, raw)
-                    self._handle_ws_trade_msg(msg, wait_for_ack=True)
-                else:
-                    self._log.error(f"Unrecognized websocket message {msg}")
+            msg = self._decoder_user_msg.decode(raw)
+            if isinstance(msg, PolymarketUserOrder):
+                self._handle_ws_order_msg(msg, wait_for_ack=True)
+            elif isinstance(msg, PolymarketUserTrade):
+                self._add_trade_to_cache(msg, raw)
+                self._handle_ws_trade_msg(msg, wait_for_ack=True)
+            else:
+                self._log.error(f"Unrecognized websocket message {msg}")
         except Exception as e:
             self._log.exception(f"Error handling websocket message: {raw.decode()}", e)
 
@@ -1028,7 +1041,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             return
 
         if wait_for_ack:
-            self._loop.create_task(self._wait_for_ack_order(msg, venue_order_id))
+            self.create_task(self._wait_for_ack_order(msg, venue_order_id))
             return
 
         client_order_id = self._cache.client_order_id(venue_order_id)
@@ -1110,7 +1123,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             return
 
         if wait_for_ack:
-            self._loop.create_task(self._wait_for_ack_trade(msg, venue_order_id))
+            self.create_task(self._wait_for_ack_trade(msg, venue_order_id))
             return
 
         client_order_id = self._cache.client_order_id(venue_order_id)
@@ -1157,7 +1170,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             venue_order_id=venue_order_id,
             venue_position_id=None,  # Not applicable on Polymarket
             trade_id=trade_id,
-            order_side=parse_order_side(msg.side),
+            order_side=msg.order_side(),
             order_type=order.order_type,
             last_qty=last_qty,
             last_px=last_px,
@@ -1170,4 +1183,4 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         self._processed_trades.add(trade_id)
 
-        self._loop.create_task(self._update_account_state())
+        self.create_task(self._update_account_state())

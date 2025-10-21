@@ -116,7 +116,12 @@ impl MarginAccount {
     /// Panics if an existing margin balance is found but cannot be unwrapped.
     pub fn update_initial_margin(&mut self, instrument_id: InstrumentId, margin_init: Money) {
         let margin_balance = self.margins.get(&instrument_id);
-        if margin_balance.is_none() {
+        if let Some(balance) = margin_balance {
+            // update the margin_balance initial property with margin_init
+            let mut new_margin_balance = *balance;
+            new_margin_balance.initial = margin_init;
+            self.margins.insert(instrument_id, new_margin_balance);
+        } else {
             self.margins.insert(
                 instrument_id,
                 MarginBalance::new(
@@ -125,11 +130,6 @@ impl MarginAccount {
                     instrument_id,
                 ),
             );
-        } else {
-            // update the margin_balance initial property with margin_init
-            let mut new_margin_balance = *margin_balance.unwrap();
-            new_margin_balance.initial = margin_init;
-            self.margins.insert(instrument_id, new_margin_balance);
         }
         self.recalculate_balance(margin_init.currency);
     }
@@ -160,7 +160,12 @@ impl MarginAccount {
         margin_maintenance: Money,
     ) {
         let margin_balance = self.margins.get(&instrument_id);
-        if margin_balance.is_none() {
+        if let Some(balance) = margin_balance {
+            // update the margin_balance maintenance property with margin_maintenance
+            let mut new_margin_balance = *balance;
+            new_margin_balance.maintenance = margin_maintenance;
+            self.margins.insert(instrument_id, new_margin_balance);
+        } else {
             self.margins.insert(
                 instrument_id,
                 MarginBalance::new(
@@ -169,11 +174,6 @@ impl MarginAccount {
                     instrument_id,
                 ),
             );
-        } else {
-            // update the margin_balance maintenance property with margin_maintenance
-            let mut new_margin_balance = *margin_balance.unwrap();
-            new_margin_balance.maintenance = margin_maintenance;
-            self.margins.insert(instrument_id, new_margin_balance);
         }
         self.recalculate_balance(margin_maintenance.currency);
     }
@@ -206,10 +206,11 @@ impl MarginAccount {
         use_quote_for_inverse: Option<bool>,
     ) -> Money {
         let notional = instrument.calculate_notional_value(quantity, price, use_quote_for_inverse);
-        let leverage = self.get_leverage(&instrument.id());
+        let mut leverage = self.get_leverage(&instrument.id());
         if leverage == 0.0 {
             self.leverages
                 .insert(instrument.id(), self.default_leverage);
+            leverage = self.default_leverage;
         }
         let adjusted_notional = notional / leverage;
         let initial_margin_f64 = instrument.margin_init().to_f64().unwrap();
@@ -236,10 +237,11 @@ impl MarginAccount {
         use_quote_for_inverse: Option<bool>,
     ) -> Money {
         let notional = instrument.calculate_notional_value(quantity, price, use_quote_for_inverse);
-        let leverage = self.get_leverage(&instrument.id());
+        let mut leverage = self.get_leverage(&instrument.id());
         if leverage == 0.0 {
             self.leverages
                 .insert(instrument.id(), self.default_leverage);
+            leverage = self.default_leverage;
         }
         let adjusted_notional = notional / leverage;
         let margin_maint_f64 = instrument.margin_maint().to_f64().unwrap();
@@ -407,17 +409,18 @@ impl Account for MarginAccount {
     ) -> anyhow::Result<Vec<Money>> {
         let mut pnls: Vec<Money> = Vec::new();
 
-        if let Some(ref pos) = position {
-            if pos.quantity.is_positive() && pos.entry != fill.order_side {
-                // Calculate and add PnL using the minimum of fill quantity and position quantity
-                // to avoid double-limiting that occurs in position.calculate_pnl()
-                let pnl_quantity = Quantity::from_raw(
-                    fill.last_qty.raw.min(pos.quantity.raw),
-                    fill.last_qty.precision,
-                );
-                let pnl = pos.calculate_pnl(pos.avg_px_open, fill.last_px.as_f64(), pnl_quantity);
-                pnls.push(pnl);
-            }
+        if let Some(ref pos) = position
+            && pos.quantity.is_positive()
+            && pos.entry != fill.order_side
+        {
+            // Calculate and add PnL using the minimum of fill quantity and position quantity
+            // to avoid double-limiting that occurs in position.calculate_pnl()
+            let pnl_quantity = Quantity::from_raw(
+                fill.last_qty.raw.min(pos.quantity.raw),
+                fill.last_qty.precision,
+            );
+            let pnl = pos.calculate_pnl(pos.avg_px_open, fill.last_px.as_f64(), pnl_quantity);
+            pnls.push(pnl);
         }
 
         Ok(pnls)
@@ -796,6 +799,60 @@ mod tests {
         // PnL = (50075.00 - 50000.00) * 0.001 = 75.0 * 0.001 = 0.075 USDT
         let expected_pnl = Money::from("0.075 USDT");
         assert_eq!(pnls[0], expected_pnl);
+    }
+
+    #[rstest]
+    fn test_calculate_initial_margin_with_zero_leverage_falls_back_to_default(
+        mut margin_account: MarginAccount,
+        audusd_sim: CurrencyPair,
+    ) {
+        // Set default leverage
+        margin_account.set_default_leverage(10.0);
+
+        // Set instrument-specific leverage to 0.0 (invalid)
+        margin_account.set_leverage(audusd_sim.id, 0.0);
+
+        // Should not panic, should use default leverage instead
+        let result = margin_account.calculate_initial_margin(
+            audusd_sim,
+            Quantity::from(100_000),
+            Price::from("0.8"),
+            None,
+        );
+
+        // With default leverage of 10.0, notional of 80,000 / 10 = 8,000
+        // Initial margin rate is 0.03, so 8,000 * 0.03 = 240.00
+        assert_eq!(result, Money::from("240.00 USD"));
+
+        // Verify that the hashmap was updated with default leverage
+        assert_eq!(margin_account.get_leverage(&audusd_sim.id), 10.0);
+    }
+
+    #[rstest]
+    fn test_calculate_maintenance_margin_with_zero_leverage_falls_back_to_default(
+        mut margin_account: MarginAccount,
+        audusd_sim: CurrencyPair,
+    ) {
+        // Set default leverage
+        margin_account.set_default_leverage(50.0);
+
+        // Set instrument-specific leverage to 0.0 (invalid)
+        margin_account.set_leverage(audusd_sim.id, 0.0);
+
+        // Should not panic, should use default leverage instead
+        let result = margin_account.calculate_maintenance_margin(
+            audusd_sim,
+            Quantity::from(1_000_000),
+            Price::from("1"),
+            None,
+        );
+
+        // With default leverage of 50.0, notional of 1,000,000 / 50 = 20,000
+        // Maintenance margin rate is 0.03, so 20,000 * 0.03 = 600.00
+        assert_eq!(result, Money::from("600.00 USD"));
+
+        // Verify that the hashmap was updated with default leverage
+        assert_eq!(margin_account.get_leverage(&audusd_sim.id), 50.0);
     }
 
     #[rstest]

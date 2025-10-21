@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 
+use ahash::AHashMap;
 use nautilus_common::{custom::CustomData, signal::Signal};
 use nautilus_model::{
     accounts::{Account, AccountAny},
@@ -207,7 +208,7 @@ impl DatabaseQueries {
             .execute(pool)
             .await
             .map(|_| ())
-            .map_err(|e| anyhow::anyhow!(format!("Failed to insert item {} into instrument table: {:?}", instrument.id().to_string(), e)))
+            .map_err(|e| anyhow::anyhow!("Failed to insert item {} into instrument table: {:?}", instrument.id(), e))
     }
 
     /// Loads a single `InstrumentAny` entry by `instrument_id` via the provided `pool`.
@@ -1127,8 +1128,8 @@ impl DatabaseQueries {
     /// Returns an error if the SQL SELECT or iteration fails.
     pub async fn load_distinct_order_event_client_ids(
         pool: &PgPool,
-    ) -> anyhow::Result<HashMap<ClientOrderId, ClientId>> {
-        let mut map: HashMap<ClientOrderId, ClientId> = HashMap::new();
+    ) -> anyhow::Result<AHashMap<ClientOrderId, ClientId>> {
+        let mut map: AHashMap<ClientOrderId, ClientId> = AHashMap::new();
         let result = sqlx::query_as::<_, OrderEventOrderClientIdCombination>(
             r#"
             SELECT DISTINCT
@@ -1167,7 +1168,7 @@ impl DatabaseQueries {
         "#,
         )
         .bind(signal.name.to_string())
-        .bind(signal.value.to_string())
+        .bind(signal.value.clone())
         .bind(signal.ts_event.to_string())
         .bind(signal.ts_init.to_string())
         .execute(pool)

@@ -15,7 +15,7 @@
 
 //! Data engine and market data processing for [NautilusTrader](http://nautilustrader.io).
 //!
-//! The *data* crate provides a comprehensive framework for handling market data ingestion,
+//! The `nautilus-data` crate provides a comprehensive framework for handling market data ingestion,
 //! processing, and aggregation within the NautilusTrader ecosystem. This includes real-time
 //! data streaming, historical data management, and various aggregation methodologies:
 //!
@@ -47,6 +47,7 @@
 //! - `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
 //! - `high-precision`: Enables [high-precision mode](https://nautilustrader.io/docs/nightly/getting_started/installation#precision-mode) to use 128-bit value types.
 //! - `defi`: Enables DeFi (Decentralized Finance) support.
+//! - `extension-module`: Builds the crate as a Python extension module.
 
 #![warn(rustc::all)]
 #![deny(unsafe_code)]
@@ -59,6 +60,9 @@
 pub mod aggregation;
 pub mod client;
 pub mod engine;
+
+#[cfg(feature = "defi")]
+pub mod defi;
 
 // Re-exports
 pub use client::{DataClient, DataClientAdapter};

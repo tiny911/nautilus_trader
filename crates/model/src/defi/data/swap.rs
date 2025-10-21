@@ -15,13 +15,12 @@
 
 use std::fmt::Display;
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, I256, U160};
 use nautilus_core::UnixNanos;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    data::HasTsInit,
-    defi::{amm::SharedPool, chain::SharedChain, dex::SharedDex},
+    defi::{SharedChain, SharedDex},
     enums::OrderSide,
     identifiers::InstrumentId,
     types::{Price, Quantity},
@@ -29,13 +28,19 @@ use crate::{
 
 /// Represents a token swap transaction on a decentralized exchange (DEX).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+)]
 pub struct PoolSwap {
     /// The blockchain network where the swap occurred.
     pub chain: SharedChain,
     /// The decentralized exchange where the swap was executed.
     pub dex: SharedDex,
-    /// The DEX liquidity pool.
-    pub pool: SharedPool,
+    /// The instrument ID for this pool's trading pair.
+    pub instrument_id: InstrumentId,
+    /// The blockchain address of the pool smart contract.
+    pub pool_address: Address,
     /// The blockchain block number at which the swap was executed.
     pub block: u64,
     /// The unique hash identifier of the blockchain transaction containing the swap.
@@ -46,16 +51,28 @@ pub struct PoolSwap {
     pub log_index: u32,
     /// The blockchain address of the user or contract that initiated the swap.
     pub sender: Address,
+    /// The blockchain address that received the swapped tokens.
+    pub recipient: Address,
+    /// The sqrt price after the swap (Q64.96 format).
+    pub sqrt_price_x96: U160,
+    /// The amount of token0 involved in the swap.
+    pub amount0: I256,
+    /// The amount of token1 involved in the swap.
+    pub amount1: I256,
+    /// The liquidity of the pool after the swap occurred.
+    pub liquidity: u128,
+    /// The current tick of the pool after the swap occurred.
+    pub tick: i32,
     /// The direction of the swap from the perspective of the base token.
-    pub side: OrderSide,
+    pub side: Option<OrderSide>,
     /// The amount of tokens swapped.
-    pub size: Quantity,
+    pub size: Option<Quantity>,
     /// The exchange rate at which the swap occurred.
-    pub price: Price,
+    pub price: Option<Price>,
     /// UNIX timestamp (nanoseconds) when the swap occurred.
-    pub timestamp: UnixNanos,
+    pub timestamp: Option<UnixNanos>,
     /// UNIX timestamp (nanoseconds) when the instance was initialized.
-    pub ts_init: UnixNanos,
+    pub ts_init: Option<UnixNanos>,
 }
 
 impl PoolSwap {
@@ -65,44 +82,46 @@ impl PoolSwap {
     pub fn new(
         chain: SharedChain,
         dex: SharedDex,
-        pool: SharedPool,
+        instrument_id: InstrumentId,
+        pool_address: Address,
         block: u64,
         transaction_hash: String,
         transaction_index: u32,
         log_index: u32,
-        timestamp: UnixNanos,
+        timestamp: Option<UnixNanos>,
         sender: Address,
-        side: OrderSide,
-        size: Quantity,
-        price: Price,
+        recipient: Address,
+        amount0: I256,
+        amount1: I256,
+        sqrt_price_x96: U160,
+        liquidity: u128,
+        tick: i32,
+        side: Option<OrderSide>,
+        size: Option<Quantity>,
+        price: Option<Price>,
     ) -> Self {
         Self {
             chain,
             dex,
-            pool,
+            instrument_id,
+            pool_address,
             block,
             transaction_hash,
             transaction_index,
             log_index,
             timestamp,
             sender,
+            recipient,
+            amount0,
+            amount1,
+            sqrt_price_x96,
+            liquidity,
+            tick,
             side,
             size,
             price,
             ts_init: timestamp, // TODO: Use swap timestamp as init timestamp for now
         }
-    }
-
-    /// Returns the instrument ID for this swap.
-    #[must_use]
-    pub fn instrument_id(&self) -> InstrumentId {
-        self.pool.instrument_id()
-    }
-}
-
-impl HasTsInit for PoolSwap {
-    fn ts_init(&self) -> UnixNanos {
-        self.ts_init
     }
 }
 
@@ -110,14 +129,9 @@ impl Display for PoolSwap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}(chain={}, dex={}, pool={}, side={}, quantity={}, price={})",
+            "{}(instrument_id={})",
             stringify!(PoolSwap),
-            self.chain.name,
-            self.dex.name,
-            self.pool.ticker(),
-            self.side,
-            self.size,
-            self.price,
+            self.instrument_id,
         )
     }
 }

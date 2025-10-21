@@ -34,7 +34,6 @@ pub mod stubs;
 
 use std::{fmt::Display, str::FromStr};
 
-use anyhow::{anyhow, bail};
 use enum_dispatch::enum_dispatch;
 use nautilus_core::{
     UnixNanos,
@@ -199,8 +198,8 @@ impl TickSchemeRule for TickScheme {
     #[inline(always)]
     fn next_bid_price(&self, value: f64, n: i32, precision: u8) -> Option<Price> {
         match self {
-            TickScheme::Fixed(scheme) => scheme.next_bid_price(value, n, precision),
-            TickScheme::Crypto => {
+            Self::Fixed(scheme) => scheme.next_bid_price(value, n, precision),
+            Self::Crypto => {
                 let increment: f64 = 0.01;
                 let base = (value / increment).floor() * increment;
                 Some(Price::new(base - (n as f64) * increment, precision))
@@ -211,8 +210,8 @@ impl TickSchemeRule for TickScheme {
     #[inline(always)]
     fn next_ask_price(&self, value: f64, n: i32, precision: u8) -> Option<Price> {
         match self {
-            TickScheme::Fixed(scheme) => scheme.next_ask_price(value, n, precision),
-            TickScheme::Crypto => {
+            Self::Fixed(scheme) => scheme.next_ask_price(value, n, precision),
+            Self::Crypto => {
                 let increment: f64 = 0.01;
                 let base = (value / increment).ceil() * increment;
                 Some(Price::new(base + (n as f64) * increment, precision))
@@ -224,8 +223,8 @@ impl TickSchemeRule for TickScheme {
 impl Display for TickScheme {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TickScheme::Fixed(_) => write!(f, "FIXED"),
-            TickScheme::Crypto => write!(f, "CRYPTO_0_01"),
+            Self::Fixed(_) => write!(f, "FIXED"),
+            Self::Crypto => write!(f, "CRYPTO_0_01"),
         }
     }
 }
@@ -235,9 +234,9 @@ impl FromStr for TickScheme {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_uppercase().as_str() {
-            "FIXED" => Ok(TickScheme::Fixed(FixedTickScheme::new(1.0)?)),
-            "CRYPTO_0_01" => Ok(TickScheme::Crypto),
-            _ => Err(anyhow!("unknown tick scheme {}", s)),
+            "FIXED" => Ok(Self::Fixed(FixedTickScheme::new(1.0)?)),
+            "CRYPTO_0_01" => Ok(Self::Crypto),
+            _ => anyhow::bail!("unknown tick scheme {s}"),
         }
     }
 }
@@ -296,8 +295,7 @@ pub trait Instrument: 'static + Send {
     fn is_inverse(&self) -> bool;
     fn is_quanto(&self) -> bool {
         self.base_currency()
-            .map(|currency| currency != self.settlement_currency())
-            .unwrap_or(false)
+            .is_some_and(|currency| currency != self.settlement_currency())
     }
 
     fn price_precision(&self) -> u8;
@@ -344,12 +342,12 @@ pub trait Instrument: 'static + Send {
             .price_precision()
             .min(self._min_price_increment_precision()) as u32;
         let decimal_value = Decimal::from_f64_retain(value)
-            .ok_or_else(|| anyhow!("non-finite value passed to make_price"))?;
+            .ok_or_else(|| anyhow::anyhow!("non-finite value passed to make_price"))?;
         let rounded_decimal =
             decimal_value.round_dp_with_strategy(precision, RoundingStrategy::MidpointNearestEven);
         let rounded = rounded_decimal
             .to_f64()
-            .ok_or_else(|| anyhow!("Decimal out of f64 range in make_price"))?;
+            .ok_or_else(|| anyhow::anyhow!("Decimal out of f64 range in make_price"))?;
         Ok(Price::new(rounded, self.price_precision()))
     }
 
@@ -365,7 +363,7 @@ pub trait Instrument: 'static + Send {
         let precision_u8 = self.size_precision();
         let precision = precision_u8 as u32;
         let decimal_value = Decimal::from_f64_retain(value)
-            .ok_or_else(|| anyhow!("non-finite value passed to make_qty"))?;
+            .ok_or_else(|| anyhow::anyhow!("non-finite value passed to make_qty"))?;
         let rounded_decimal = if round_down.unwrap_or(false) {
             decimal_value.round_dp_with_strategy(precision, RoundingStrategy::ToZero)
         } else {
@@ -373,10 +371,10 @@ pub trait Instrument: 'static + Send {
         };
         let rounded = rounded_decimal
             .to_f64()
-            .ok_or_else(|| anyhow!("Decimal out of f64 range in make_qty"))?;
+            .ok_or_else(|| anyhow::anyhow!("Decimal out of f64 range in make_qty"))?;
         let increment = 10f64.powi(-(precision_u8 as i32));
         if value > 0.0 && rounded < increment * 0.1 {
-            bail!("value rounded to zero for quantity");
+            anyhow::bail!("value rounded to zero for quantity");
         }
         Ok(Quantity::new(rounded, precision_u8))
     }
@@ -401,17 +399,18 @@ pub trait Instrument: 'static + Send {
             last_price.as_f64().is_finite(),
             "non-finite price passed to calculate_base_quantity",
         )?;
-        let quantity_decimal = Decimal::from_f64_retain(quantity.as_f64())
-            .ok_or_else(|| anyhow!("non-finite quantity passed to calculate_base_quantity"))?;
+        let quantity_decimal = Decimal::from_f64_retain(quantity.as_f64()).ok_or_else(|| {
+            anyhow::anyhow!("non-finite quantity passed to calculate_base_quantity")
+        })?;
         let price_decimal = Decimal::from_f64_retain(last_price.as_f64())
-            .ok_or_else(|| anyhow!("non-finite price passed to calculate_base_quantity"))?;
+            .ok_or_else(|| anyhow::anyhow!("non-finite price passed to calculate_base_quantity"))?;
         let value_decimal = (quantity_decimal / price_decimal).round_dp_with_strategy(
             self.size_precision().into(),
             RoundingStrategy::MidpointNearestEven,
         );
-        let rounded = value_decimal
-            .to_f64()
-            .ok_or_else(|| anyhow!("Decimal out of f64 range in calculate_base_quantity"))?;
+        let rounded = value_decimal.to_f64().ok_or_else(|| {
+            anyhow::anyhow!("Decimal out of f64 range in calculate_base_quantity")
+        })?;
         Ok(Quantity::new(rounded, self.size_precision()))
     }
 
@@ -527,8 +526,7 @@ price_increment={}, size_increment={}, multiplier={}, margin_init={}, margin_mai
             stringify!(CurrencyPair),
             self.id,
             self.tick_scheme()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "None".into()),
+                .map_or_else(|| "None".into(), |s| s.to_string()),
             self.price_precision(),
             self.size_precision(),
             self.price_increment(),
@@ -654,7 +652,7 @@ mod tests {
 
     #[rstest]
     fn tick_navigation(currency_pair_btcusdt: CurrencyPair) {
-        let start = 10_000.1234;
+        let start = 10_000.123_4;
         let bid_0 = currency_pair_btcusdt.next_bid_price(start, 0).unwrap();
         let bid_1 = currency_pair_btcusdt.next_bid_price(start, 1).unwrap();
         assert!(bid_1 < bid_0);
@@ -886,8 +884,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case(1.234_9999, false, "1.235000")]
-    #[case(1.234_9999, true, "1.234999")]
+    #[case(1.234_999_9, false, "1.235000")]
+    #[case(1.234_999_9, true, "1.234999")]
     fn make_qty_boundary(
         currency_pair_btcusdt: CurrencyPair,
         #[case] input: f64,
@@ -1086,7 +1084,7 @@ mod tests {
     #[rstest]
     #[case::dp0(Decimal::new(1_000, 0), Decimal::new(2, 0), 500.0)]
     #[case::dp1(Decimal::new(10_000, 1), Decimal::new(2, 0), 500.0)]
-    #[case::dp2(Decimal::new(1_000_00, 2), Decimal::new(2, 0), 500.0)]
+    #[case::dp2(Decimal::new(100_000, 2), Decimal::new(2, 0), 500.0)]
     #[case::dp3(Decimal::new(1_000_000, 3), Decimal::new(2, 0), 500.0)]
     #[case::dp4(Decimal::new(10_000_000, 4), Decimal::new(2, 0), 500.0)]
     #[case::dp5(Decimal::new(100_000_000, 5), Decimal::new(2, 0), 500.0)]
@@ -1106,7 +1104,7 @@ mod tests {
     }
 
     proptest! {
-        #[test]
+        #[rstest]
         fn make_price_qty_fuzz(input in 0.0001f64..1e8) {
             let instrument = currency_pair_btcusdt();
             let price = instrument.make_price(input);
@@ -1174,8 +1172,8 @@ mod tests {
     #[rstest]
     #[case(0.999_999, false)]
     #[case(0.999_999, true)]
-    #[case(1.000_0001, false)]
-    #[case(1.000_0001, true)]
+    #[case(1.000_000_1, false)]
+    #[case(1.000_000_1, true)]
     #[case(1.234_5, false)]
     #[case(1.234_5, true)]
     #[case(2.345_5, false)]

@@ -53,6 +53,10 @@ class DockerizedIBGatewayConfig(NautilusConfig, frozen=True):
         The timeout (seconds) for trying to launch IBG docker container when start=True.
     container_image: str, optional
         The reference to the container image used by the IB Gateway.
+    vnc_port: int | None, optional, default None
+        The VNC port for the container. Set to None to disable VNC access.
+        The VNC server provides remote desktop access to the IB Gateway interface.
+        Examples: 5900, 5901, 5902, etc.
 
     """
 
@@ -62,6 +66,7 @@ class DockerizedIBGatewayConfig(NautilusConfig, frozen=True):
     read_only_api: bool = True
     timeout: int = 300
     container_image: str = "ghcr.io/gnzsnz/ib-gateway:stable"
+    vnc_port: int | None = None
 
     def __repr__(self):
         masked_username = self._mask_sensitive_info(self.username)
@@ -156,6 +161,15 @@ class InteractiveBrokersInstrumentProviderConfig(InstrumentProviderConfig, froze
                 self.build_futures_chain,
                 self.min_expiry_days,
                 self.max_expiry_days,
+                self.symbology_method,
+                self.convert_exchange_to_mic_venue,
+                (
+                    tuple(sorted(self.symbol_to_mic_venue.items()))
+                    if self.symbol_to_mic_venue
+                    else None
+                ),
+                self.cache_validity_days,
+                self.pickle_path,
             ),
         )
 
@@ -239,6 +253,13 @@ class InteractiveBrokersExecClientConfig(LiveExecClientConfig, frozen=True):
         The client's gateway container configuration.
     connection_timeout : int, default 300
         The timeout (seconds) to wait for the client connection to be established.
+    fetch_all_open_orders : bool, default False
+        If True, uses reqAllOpenOrders to fetch orders from all API clients and TWS GUI.
+        If False, uses reqOpenOrders to fetch only orders from current client ID session.
+        Note: When using reqAllOpenOrders with client ID 0, it can see orders from all
+        sources including TWS GUI, but cannot see orders from other non-zero client IDs.
+    track_option_exercise_from_position_update : bool, default False
+        If True, subscribes to real-time position updates to track option exercises.
 
     """
 
@@ -251,3 +272,5 @@ class InteractiveBrokersExecClientConfig(LiveExecClientConfig, frozen=True):
     account_id: str | None = None
     dockerized_gateway: DockerizedIBGatewayConfig | None = None
     connection_timeout: int = 300
+    fetch_all_open_orders: bool = False
+    track_option_exercise_from_position_update: bool = False

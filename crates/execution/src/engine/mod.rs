@@ -37,8 +37,8 @@ use nautilus_common::{
     generators::position_id::PositionIdGenerator,
     logging::{CMD, EVT, RECV},
     messages::execution::{
-        BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, QueryOrder, SubmitOrder,
-        SubmitOrderList, TradingCommand,
+        BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, QueryAccount, QueryOrder,
+        SubmitOrder, SubmitOrderList, TradingCommand,
     },
     msgbus::{
         self, get_message_bus,
@@ -52,7 +52,7 @@ use nautilus_model::{
         OrderDenied, OrderEvent, OrderEventAny, OrderFilled, PositionChanged, PositionClosed,
         PositionOpened,
     },
-    identifiers::{ClientId, InstrumentId, PositionId, StrategyId, Venue},
+    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
     orderbook::own::{OwnOrderBook, should_handle_own_book_order},
     orders::{Order, OrderAny, OrderError},
@@ -76,6 +76,7 @@ pub struct ExecutionEngine {
     routing_map: HashMap<Venue, ClientId>,
     oms_overrides: HashMap<StrategyId, OmsType>,
     external_order_claims: HashMap<InstrumentId, StrategyId>,
+    external_clients: HashSet<ClientId>,
     pos_id_generator: PositionIdGenerator,
     config: ExecutionEngineConfig,
 }
@@ -104,6 +105,12 @@ impl ExecutionEngine {
             routing_map: HashMap::new(),
             oms_overrides: HashMap::new(),
             external_order_claims: HashMap::new(),
+            external_clients: config
+                .as_ref()
+                .and_then(|c| c.external_clients.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
             pos_id_generator: PositionIdGenerator::new(trader_id, clock),
             config: config.unwrap_or_default(),
         }
@@ -281,6 +288,14 @@ impl ExecutionEngine {
             log::debug!("{RECV}{CMD} {command:?}");
         }
 
+        if self.external_clients.contains(&command.client_id()) {
+            if self.config.debug {
+                let cid = command.client_id();
+                log::debug!("Skipping execution command for external client {cid}: {command:?}");
+            }
+            return;
+        }
+
         let client: Rc<dyn ExecutionClient> = if let Some(client) = self
             .clients
             .get(&command.client_id())
@@ -309,6 +324,7 @@ impl ExecutionEngine {
             TradingCommand::CancelAllOrders(cmd) => self.handle_cancel_all_orders(client, cmd),
             TradingCommand::BatchCancelOrders(cmd) => self.handle_batch_cancel_orders(client, cmd),
             TradingCommand::QueryOrder(cmd) => self.handle_query_order(client, cmd),
+            TradingCommand::QueryAccount(cmd) => self.handle_query_account(client, cmd),
         }
     }
 
@@ -349,7 +365,13 @@ impl ExecutionEngine {
         };
 
         // Handle quote quantity conversion
-        if !instrument.is_inverse() && order.is_quote_quantity() {
+        if self.config.convert_quote_qty_to_base
+            && !instrument.is_inverse()
+            && order.is_quote_quantity()
+        {
+            log::warn!(
+                "`convert_quote_qty_to_base` is deprecated; set `convert_quote_qty_to_base=false` to maintain consistent behavior"
+            );
             let last_px = self.last_px_for_conversion(&instrument_id, order.order_side());
 
             if let Some(price) = last_px {
@@ -401,46 +423,57 @@ impl ExecutionEngine {
         drop(cache);
 
         // Get instrument from cache
-        let cache = self.cache.borrow();
-        let instrument = if let Some(instrument) = cache.instrument(&cmd.instrument_id) {
-            instrument
-        } else {
-            log::error!(
-                "Cannot handle submit order list: no instrument found for {}, {cmd}",
-                cmd.instrument_id,
-            );
-            return;
+        let instrument = {
+            let cache = self.cache.borrow();
+            if let Some(instrument) = cache.instrument(&cmd.instrument_id) {
+                instrument.clone()
+            } else {
+                log::error!(
+                    "Cannot handle submit order list: no instrument found for {}, {cmd}",
+                    cmd.instrument_id,
+                );
+                return;
+            }
         };
 
-        // Check if converting quote quantity
-        if !instrument.is_inverse() && cmd.order_list.orders[0].is_quote_quantity() {
-            let mut quote_qty = None;
-            let mut _last_px = None;
+        // Handle quote quantity conversion
+        if self.config.convert_quote_qty_to_base && !instrument.is_inverse() {
+            let mut conversions: Vec<(ClientOrderId, Quantity)> =
+                Vec::with_capacity(cmd.order_list.orders.len());
 
             for order in &cmd.order_list.orders {
                 if !order.is_quote_quantity() {
                     continue; // Base quantity already set
                 }
 
-                if Some(order.quantity()) != quote_qty {
-                    _last_px =
-                        self.last_px_for_conversion(&order.instrument_id(), order.order_side());
-                    quote_qty = Some(order.quantity());
-                }
+                let last_px =
+                    self.last_px_for_conversion(&order.instrument_id(), order.order_side());
 
-                // TODO: Pull order out of cache to modify
-                // if let Some(px) = last_px {
-                //     let base_qty = instrument.get_base_quantity(order.quantity(), px);
-                //     self.set_order_base_qty(order, base_qty);
-                // } else {
-                //     for order in &cmd.order_list.orders {
-                //         self.deny_order(
-                //             order,
-                //             &format!("no-price-to-convert-quote-qty {}", order.instrument_id()),
-                //         );
-                //     }
-                //     return; // Denied
-                // }
+                if let Some(px) = last_px {
+                    let base_qty = instrument.get_base_quantity(order.quantity(), px);
+                    conversions.push((order.client_order_id(), base_qty));
+                } else {
+                    for order in &cmd.order_list.orders {
+                        self.deny_order(
+                            order,
+                            &format!("no-price-to-convert-quote-qty {}", order.instrument_id()),
+                        );
+                    }
+                    return; // Denied
+                }
+            }
+
+            if !conversions.is_empty() {
+                log::warn!(
+                    "`convert_quote_qty_to_base` is deprecated; set `convert_quote_qty_to_base=false` to maintain consistent behavior"
+                );
+
+                let mut cache = self.cache.borrow_mut();
+                for (client_order_id, base_qty) in conversions {
+                    if let Some(mut_order) = cache.mut_order(&client_order_id) {
+                        self.set_order_base_qty(mut_order, base_qty);
+                    }
+                }
             }
         }
 
@@ -486,6 +519,12 @@ impl ExecutionEngine {
     fn handle_batch_cancel_orders(&self, client: Rc<dyn ExecutionClient>, cmd: &BatchCancelOrders) {
         if let Err(e) = client.batch_cancel_orders(cmd) {
             log::error!("Error batch canceling orders: {e}");
+        }
+    }
+
+    fn handle_query_account(&self, client: Rc<dyn ExecutionClient>, cmd: &QueryAccount) {
+        if let Err(e) = client.query_account(cmd) {
+            log::error!("Error querying account: {e}");
         }
     }
 
@@ -583,7 +622,7 @@ impl ExecutionEngine {
         match event {
             OrderEventAny::Filled(fill) => {
                 let oms_type = self.determine_oms_type(fill);
-                let position_id = self.determine_position_id(*fill, oms_type);
+                let position_id = self.determine_position_id(*fill, oms_type, Some(&order));
 
                 // Create a new fill with the determined position ID
                 let mut fill = *fill;
@@ -620,15 +659,24 @@ impl ExecutionEngine {
         OmsType::Netting // Default fallback
     }
 
-    fn determine_position_id(&mut self, fill: OrderFilled, oms_type: OmsType) -> PositionId {
+    fn determine_position_id(
+        &mut self,
+        fill: OrderFilled,
+        oms_type: OmsType,
+        order: Option<&OrderAny>,
+    ) -> PositionId {
         match oms_type {
-            OmsType::Hedging => self.determine_hedging_position_id(fill),
+            OmsType::Hedging => self.determine_hedging_position_id(fill, order),
             OmsType::Netting => self.determine_netting_position_id(fill),
             _ => self.determine_netting_position_id(fill), // Default to netting
         }
     }
 
-    fn determine_hedging_position_id(&mut self, fill: OrderFilled) -> PositionId {
+    fn determine_hedging_position_id(
+        &mut self,
+        fill: OrderFilled,
+        order: Option<&OrderAny>,
+    ) -> PositionId {
         // Check if position ID already exists
         if let Some(position_id) = fill.position_id {
             if self.config.debug {
@@ -637,15 +685,19 @@ impl ExecutionEngine {
             return position_id;
         }
 
-        // Check for order
         let cache = self.cache.borrow();
-        let order = match cache.order(&fill.client_order_id()) {
-            Some(o) => o,
-            None => {
-                panic!(
-                    "Order for {} not found to determine position ID",
-                    fill.client_order_id()
-                );
+
+        let order = if let Some(o) = order {
+            o
+        } else {
+            match cache.order(&fill.client_order_id()) {
+                Some(o) => o,
+                None => {
+                    panic!(
+                        "Order for {} not found to determine position ID",
+                        fill.client_order_id()
+                    );
+                }
             }
         };
 
@@ -676,12 +728,14 @@ impl ExecutionEngine {
 
     fn apply_event_to_order(&self, order: &mut OrderAny, event: OrderEventAny) {
         if let Err(e) = order.apply(event.clone()) {
-            match e {
-                OrderError::InvalidStateTransition => {
-                    log::warn!("InvalidStateTrigger: {e}, did not apply {event}");
-                }
-                _ => {
-                    log::error!("Error applying event: {e}, did not apply {event}");
+            if matches!(e, OrderError::InvalidStateTransition) {
+                log::warn!("InvalidStateTrigger: {e}, did not apply {event}");
+            } else {
+                // ValueError: Protection against invalid IDs
+                // KeyError: Protection against duplicate fills
+                log::error!("Error applying event: {e}, did not apply {event}");
+                if should_handle_own_book_order(order) {
+                    self.cache.borrow_mut().update_own_order_book(order);
                 }
             }
             return;
@@ -719,43 +773,90 @@ impl ExecutionEngine {
             return;
         }
 
+        // Skip portfolio position updates for combo fills (spread instruments)
+        // Combo fills are only used for order management, not portfolio updates
+        let position = if instrument.is_spread() {
+            None
+        } else {
+            self.handle_position_update(instrument.clone(), fill, oms_type);
+            let position_id = fill.position_id.unwrap();
+            self.cache.borrow().position(&position_id).cloned()
+        };
+
+        // Handle contingent orders for both spread and non-spread instruments
+        // For spread instruments, contingent orders work without position linkage
+        if matches!(order.contingency_type(), Some(ContingencyType::Oto)) {
+            // For non-spread instruments, link to position if available
+            if !instrument.is_spread()
+                && let Some(ref pos) = position
+                && pos.is_open()
+            {
+                let position_id = pos.id;
+                for client_order_id in order.linked_order_ids().unwrap_or_default() {
+                    let mut cache = self.cache.borrow_mut();
+                    let contingent_order = cache.mut_order(client_order_id);
+                    if let Some(contingent_order) = contingent_order
+                        && contingent_order.position_id().is_none()
+                    {
+                        contingent_order.set_position_id(Some(position_id));
+
+                        if let Err(e) = self.cache.borrow_mut().add_position_id(
+                            &position_id,
+                            &contingent_order.instrument_id().venue,
+                            &contingent_order.client_order_id(),
+                            &contingent_order.strategy_id(),
+                        ) {
+                            log::error!("Failed to add position ID: {e}");
+                        }
+                    }
+                }
+            }
+            // For spread instruments, contingent orders can still be triggered
+            // but without position linkage (since no position is created for spreads)
+        }
+    }
+
+    /// Handle position creation or update for a fill.
+    ///
+    /// This function mirrors the Python `_handle_position_update` method.
+    fn handle_position_update(
+        &mut self,
+        instrument: InstrumentAny,
+        fill: OrderFilled,
+        oms_type: OmsType,
+    ) {
         let position_id = if let Some(position_id) = fill.position_id {
             position_id
         } else {
-            log::error!("Cannot handle order fill: no position ID found for fill {fill}");
+            log::error!("Cannot handle position update: no position ID found for fill {fill}");
             return;
         };
 
-        let mut position = match self.cache.borrow().position(&position_id) {
-            Some(pos) if !pos.is_closed() => pos.clone(),
-            _ => self
-                .open_position(instrument.clone(), None, fill, oms_type)
-                .unwrap(),
-        };
+        let position_opt = self.cache.borrow().position(&position_id).cloned();
 
-        if self.will_flip_position(&position, fill) {
-            self.flip_position(instrument, &mut position, fill, oms_type);
-        } else {
-            self.update_position(&mut position, fill);
-        }
-
-        if matches!(order.contingency_type(), Some(ContingencyType::Oto)) && position.is_open() {
-            for client_order_id in order.linked_order_ids().unwrap_or_default() {
-                let mut cache = self.cache.borrow_mut();
-                let contingent_order = cache.mut_order(client_order_id);
-                if let Some(contingent_order) = contingent_order
-                    && contingent_order.position_id().is_none()
+        match position_opt {
+            None => {
+                // Position is None - open new position
+                if self.open_position(instrument, None, fill, oms_type).is_ok() {
+                    // Position opened successfully
+                }
+            }
+            Some(pos) if pos.is_closed() => {
+                // Position is closed - open new position
+                if self
+                    .open_position(instrument, Some(&pos), fill, oms_type)
+                    .is_ok()
                 {
-                    contingent_order.set_position_id(Some(position_id));
-
-                    if let Err(e) = self.cache.borrow_mut().add_position_id(
-                        &position_id,
-                        &contingent_order.instrument_id().venue,
-                        &contingent_order.client_order_id(),
-                        &contingent_order.strategy_id(),
-                    ) {
-                        log::error!("Failed to add position ID: {e}");
-                    }
+                    // Position opened successfully
+                }
+            }
+            Some(mut pos) => {
+                if self.will_flip_position(&pos, fill) {
+                    // Position will flip
+                    self.flip_position(instrument, &mut pos, fill, oms_type);
+                } else {
+                    // Update existing position
+                    self.update_position(&mut pos, fill);
                 }
             }
         }
@@ -795,21 +896,33 @@ impl ExecutionEngine {
     }
 
     fn update_position(&self, position: &mut Position, fill: OrderFilled) {
+        // Apply the fill to the position
         position.apply(&fill);
 
+        // Check if position is closed after applying the fill
+        let is_closed = position.is_closed();
+
+        // Update position in cache - this should handle the closed state tracking
         if let Err(e) = self.cache.borrow_mut().update_position(position) {
             log::error!("Failed to update position: {e:?}");
             return;
         }
 
+        // Verify cache state after update
+        let cache = self.cache.borrow();
+
+        drop(cache);
+
+        // Create position state snapshot if enabled
         if self.config.snapshot_positions {
             self.create_position_state_snapshot(position);
         }
 
+        // Create and publish appropriate position event
         let topic = switchboard::get_event_positions_topic(position.strategy_id);
         let ts_init = self.clock.borrow().timestamp_ns();
 
-        if position.is_closed() {
+        if is_closed {
             let event = PositionClosed::create(position, &fill, UUID4::new(), ts_init);
             msgbus::publish(topic, &event);
         } else {
@@ -835,7 +948,7 @@ impl ExecutionEngine {
                 position.size_precision,
             ),
             PositionSide::Short => Quantity::from_raw(
-                position.quantity.raw - fill.last_qty.raw,
+                position.quantity.raw.abs_diff(fill.last_qty.raw), // Equivalent to Python's abs(position.quantity - fill.last_qty)
                 position.size_precision,
             ),
             _ => fill.last_qty,
@@ -888,18 +1001,14 @@ impl ExecutionEngine {
             return;
         }
 
-        let position_id_flip = if oms_type == OmsType::Hedging {
-            if let Some(position_id) = fill.position_id {
-                if position_id.is_virtual() {
-                    // Generate new position ID for flipped virtual position
-                    Some(self.pos_id_generator.generate(fill.strategy_id, true))
-                } else {
-                    Some(position_id)
-                }
-            } else {
-                None
-            }
+        let position_id_flip = if oms_type == OmsType::Hedging
+            && let Some(position_id) = fill.position_id
+            && position_id.is_virtual()
+        {
+            // Generate new position ID for flipped virtual position (Hedging OMS only)
+            Some(self.pos_id_generator.generate(fill.strategy_id, true))
         } else {
+            // Default: use the same position ID as the fill (Python behavior)
             fill.position_id
         };
 
@@ -932,7 +1041,6 @@ impl ExecutionEngine {
             log::warn!("Closing position {fill_split1:?}");
             log::warn!("Flipping position {fill_split2:?}");
         }
-
         // Open flipped position
         if let Err(e) = self.open_position(instrument, None, fill_split2, oms_type) {
             log::error!("Failed to open flipped position: {e:?}");
@@ -1094,38 +1202,6 @@ impl ExecutionEngine {
 ////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////
+mod stubs;
 #[cfg(test)]
-mod tests {
-    use std::{cell::RefCell, rc::Rc};
-
-    use nautilus_common::{cache::Cache, clock::TestClock, msgbus::MessageBus};
-    use rstest::fixture;
-
-    use super::*;
-
-    #[fixture]
-    fn msgbus() -> MessageBus {
-        MessageBus::default()
-    }
-
-    #[fixture]
-    fn simple_cache() -> Cache {
-        Cache::new(None, None)
-    }
-
-    #[fixture]
-    fn clock() -> TestClock {
-        TestClock::new()
-    }
-
-    // Helpers
-    fn _get_exec_engine(
-        cache: Rc<RefCell<Cache>>,
-        clock: Rc<RefCell<TestClock>>,
-        config: Option<ExecutionEngineConfig>,
-    ) -> ExecutionEngine {
-        ExecutionEngine::new(clock, cache, config)
-    }
-
-    // TODO: After Implementing ExecutionClient & Strategy
-}
+mod tests;

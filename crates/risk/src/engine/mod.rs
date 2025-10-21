@@ -308,13 +308,16 @@ impl RiskEngine {
                 self.handle_submit_order_list(submit_order_list);
             }
             TradingCommand::ModifyOrder(modify_order) => self.handle_modify_order(modify_order),
+            TradingCommand::QueryAccount(query_account) => {
+                self.send_to_execution(TradingCommand::QueryAccount(query_account));
+            }
             _ => {
                 log::error!("Cannot handle command: {command}");
             }
         }
     }
 
-    fn handle_submit_order(&self, command: SubmitOrder) {
+    fn handle_submit_order(&mut self, command: SubmitOrder) {
         if self.config.bypass {
             self.send_to_execution(TradingCommand::SubmitOrder(command));
             return;
@@ -350,7 +353,7 @@ impl RiskEngine {
 
         let instrument_exists = {
             let cache = self.cache.borrow();
-            cache.instrument(&order.instrument_id()).cloned()
+            cache.instrument(&command.instrument_id).cloned()
         };
 
         let instrument = if let Some(instrument) = instrument_exists {
@@ -374,10 +377,11 @@ impl RiskEngine {
             return; // Denied
         }
 
-        self.execution_gateway(instrument, TradingCommand::SubmitOrder(command.clone()));
+        // Route through execution gateway for TradingState checks & throttling
+        self.execution_gateway(instrument, TradingCommand::SubmitOrder(command));
     }
 
-    fn handle_submit_order_list(&self, command: SubmitOrderList) {
+    fn handle_submit_order_list(&mut self, command: SubmitOrderList) {
         if self.config.bypass {
             self.send_to_execution(TradingCommand::SubmitOrderList(command));
             return;
@@ -418,7 +422,7 @@ impl RiskEngine {
         self.execution_gateway(instrument, TradingCommand::SubmitOrderList(command));
     }
 
-    fn handle_modify_order(&self, command: ModifyOrder) {
+    fn handle_modify_order(&mut self, command: ModifyOrder) {
         ////////////////////////////////////////////////////////////////////////////////
         // VALIDATE COMMAND
         ////////////////////////////////////////////////////////////////////////////////
@@ -457,7 +461,6 @@ impl RiskEngine {
             return;
         }
 
-        // Get instrument for orders
         let maybe_instrument = {
             let cache = self.cache.borrow();
             cache.instrument(&command.instrument_id).cloned()
@@ -468,7 +471,7 @@ impl RiskEngine {
         } else {
             self.reject_modify_order(
                 order,
-                &format!("no instrument found for {}", command.instrument_id),
+                &format!("no instrument found for {:?}", command.instrument_id),
             );
             return; // Denied
         };
@@ -488,7 +491,7 @@ impl RiskEngine {
         }
 
         // Check Quantity
-        risk_msg = self.check_quantity(&instrument, command.quantity);
+        risk_msg = self.check_quantity(&instrument, command.quantity, order.is_quote_quantity());
         if let Some(risk_msg) = risk_msg {
             self.reject_modify_order(order, &risk_msg);
             return; // Denied
@@ -517,8 +520,7 @@ impl RiskEngine {
             _ => {}
         }
 
-        // TODO: Fix message bus usage
-        // self.throttled_modify_order.send(command);
+        self.throttled_modify_order.send(command);
     }
 
     // -- PRE-TRADE CHECKS ------------------------------------------------------------------------
@@ -575,7 +577,11 @@ impl RiskEngine {
     }
 
     fn check_order_quantity(&self, instrument: InstrumentAny, order: OrderAny) -> bool {
-        let risk_msg = self.check_quantity(&instrument, Some(order.quantity()));
+        let risk_msg = self.check_quantity(
+            &instrument,
+            Some(order.quantity()),
+            order.is_quote_quantity(),
+        );
         if let Some(risk_msg) = risk_msg {
             self.deny_order(order, &risk_msg);
             return false; // Denied
@@ -678,8 +684,61 @@ impl RiskEngine {
                 continue;
             };
 
+            // For quote quantity limit orders, use worst-case execution price
+            let effective_price = if order.is_quote_quantity()
+                && !instrument.is_inverse()
+                && matches!(order, OrderAny::Limit(_) | OrderAny::StopLimit(_))
+            {
+                // Get current market price for worst-case execution
+                let cache = self.cache.borrow();
+                if let Some(quote_tick) = cache.quote(&instrument.id()) {
+                    match order.order_side() {
+                        // BUY: could execute at best ask if below limit (more quantity)
+                        OrderSide::Buy => last_px.min(quote_tick.ask_price),
+                        // SELL: could execute at best bid if above limit (but less quantity, so use limit)
+                        OrderSide::Sell => last_px.max(quote_tick.bid_price),
+                        _ => last_px,
+                    }
+                } else {
+                    last_px // No market data, use limit price
+                }
+            } else {
+                last_px
+            };
+
+            let effective_quantity = if order.is_quote_quantity() && !instrument.is_inverse() {
+                instrument.calculate_base_quantity(order.quantity(), effective_price)
+            } else {
+                order.quantity()
+            };
+
+            // Check min/max quantity against effective quantity
+            if let Some(max_quantity) = instrument.max_quantity()
+                && effective_quantity > max_quantity
+            {
+                self.deny_order(
+                    order.clone(),
+                    &format!(
+                        "QUANTITY_EXCEEDS_MAXIMUM: effective_quantity={effective_quantity}, max_quantity={max_quantity}"
+                    ),
+                );
+                return false; // Denied
+            }
+
+            if let Some(min_quantity) = instrument.min_quantity()
+                && effective_quantity < min_quantity
+            {
+                self.deny_order(
+                    order.clone(),
+                    &format!(
+                        "QUANTITY_BELOW_MINIMUM: effective_quantity={effective_quantity}, min_quantity={min_quantity}"
+                    ),
+                );
+                return false; // Denied
+            }
+
             let notional =
-                instrument.calculate_notional_value(order.quantity(), last_px, Some(true));
+                instrument.calculate_notional_value(effective_quantity, last_px, Some(true));
 
             if self.config.debug {
                 log::debug!("Notional: {notional:?}");
@@ -727,7 +786,7 @@ impl RiskEngine {
             }
 
             // Calculate OrderBalanceImpact (valid for CashAccount only)
-            let notional = instrument.calculate_notional_value(order.quantity(), last_px, None);
+            let notional = instrument.calculate_notional_value(effective_quantity, last_px, None);
             let order_balance_impact = match order.order_side() {
                 OrderSide::Buy => Money::from_raw(-notional.raw, notional.currency),
                 OrderSide::Sell => Money::from_raw(notional.raw, notional.currency),
@@ -780,33 +839,49 @@ impl RiskEngine {
                 }
             } else if order.is_sell() {
                 if cash_account.base_currency.is_some() {
-                    match cum_notional_sell.as_mut() {
-                        Some(cum_notional_buy_val) => {
-                            cum_notional_buy_val.raw += order_balance_impact.raw;
+                    if order.is_reduce_only() {
+                        if self.config.debug {
+                            log::debug!(
+                                "Reduce-only SELL skips cumulative notional free-balance check"
+                            );
                         }
-                        None => {
-                            cum_notional_sell = Some(Money::from_raw(
-                                order_balance_impact.raw,
-                                order_balance_impact.currency,
-                            ));
+                    } else {
+                        match cum_notional_sell.as_mut() {
+                            Some(cum_notional_buy_val) => {
+                                cum_notional_buy_val.raw += order_balance_impact.raw;
+                            }
+                            None => {
+                                cum_notional_sell = Some(Money::from_raw(
+                                    order_balance_impact.raw,
+                                    order_balance_impact.currency,
+                                ));
+                            }
                         }
-                    }
-                    if self.config.debug {
-                        log::debug!("Cumulative notional SELL: {cum_notional_sell:?}");
-                    }
+                        if self.config.debug {
+                            log::debug!("Cumulative notional SELL: {cum_notional_sell:?}");
+                        }
 
-                    if let (Some(free), Some(cum_notional_sell)) = (free, cum_notional_sell)
-                        && cum_notional_sell > free
-                    {
-                        self.deny_order(order.clone(), &format!("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}"));
-                        return false; // Denied
+                        if let (Some(free), Some(cum_notional_sell)) = (free, cum_notional_sell)
+                            && cum_notional_sell > free
+                        {
+                            self.deny_order(order.clone(), &format!("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}"));
+                            return false; // Denied
+                        }
                     }
                 }
                 // Account is already of type Cash, so no check
                 else if let Some(base_currency) = base_currency {
+                    if order.is_reduce_only() {
+                        if self.config.debug {
+                            log::debug!(
+                                "Reduce-only SELL skips base-currency cumulative free check"
+                            );
+                        }
+                        continue;
+                    }
+
                     let cash_value = Money::from_raw(
-                        order
-                            .quantity()
+                        effective_quantity
                             .raw
                             .try_into()
                             .map_err(|e| log::error!("Unable to convert Quantity to f64: {e}"))
@@ -874,6 +949,7 @@ impl RiskEngine {
         &self,
         instrument: &InstrumentAny,
         quantity: Option<Quantity>,
+        is_quote_quantity: bool,
     ) -> Option<String> {
         let quantity_val = quantity?;
 
@@ -887,6 +963,11 @@ impl RiskEngine {
             ));
         }
 
+        // Skip min/max checks for quote quantities (they will be checked in check_orders_risk using effective_quantity)
+        if is_quote_quantity {
+            return None;
+        }
+
         // Check maximum quantity
         if let Some(max_quantity) = instrument.max_quantity()
             && quantity_val > max_quantity
@@ -896,7 +977,7 @@ impl RiskEngine {
             ));
         }
 
-        // // Check minimum quantity
+        // Check minimum quantity
         if let Some(min_quantity) = instrument.min_quantity()
             && quantity_val < min_quantity
         {
@@ -912,11 +993,11 @@ impl RiskEngine {
 
     fn deny_command(&self, command: TradingCommand, reason: &str) {
         match command {
-            TradingCommand::SubmitOrder(submit_order) => {
-                self.deny_order(submit_order.order, reason);
+            TradingCommand::SubmitOrder(command) => {
+                self.deny_order(command.order, reason);
             }
-            TradingCommand::SubmitOrderList(submit_order_list) => {
-                self.deny_order_list(submit_order_list.order_list, reason);
+            TradingCommand::SubmitOrderList(command) => {
+                self.deny_order_list(command.order_list, reason);
             }
             _ => {
                 panic!("Cannot deny command {command}");
@@ -988,7 +1069,7 @@ impl RiskEngine {
 
     // -- EGRESS ----------------------------------------------------------------------------------
 
-    fn execution_gateway(&self, instrument: InstrumentAny, command: TradingCommand) {
+    fn execution_gateway(&mut self, instrument: InstrumentAny, command: TradingCommand) {
         match self.trading_state {
             TradingState::Halted => match command {
                 TradingCommand::SubmitOrder(submit_order) => {
@@ -1047,12 +1128,12 @@ impl RiskEngine {
                 _ => {}
             },
             TradingState::Active => match command {
-                TradingCommand::SubmitOrder(_submit_order) => {
-                    // TODO: Fix message bus usage
-                    // self.throttled_submit_order.send(submit_order);
+                TradingCommand::SubmitOrder(submit_order) => {
+                    self.throttled_submit_order.send(submit_order);
                 }
-                TradingCommand::SubmitOrderList(_submit_order_list) => {
-                    todo!("NOT IMPLEMENTED");
+                TradingCommand::SubmitOrderList(submit_order_list) => {
+                    // TODO: implement throttler for order lists
+                    self.send_to_execution(TradingCommand::SubmitOrderList(submit_order_list));
                 }
                 _ => {}
             },

@@ -46,6 +46,7 @@ from nautilus_trader.model.data cimport Bar
 from nautilus_trader.model.data cimport BarAggregation
 from nautilus_trader.model.data cimport BarSpecification
 from nautilus_trader.model.data cimport BarType
+from nautilus_trader.model.data cimport FundingRateUpdate
 from nautilus_trader.model.data cimport IndexPriceUpdate
 from nautilus_trader.model.data cimport MarkPriceUpdate
 from nautilus_trader.model.data cimport QuoteTick
@@ -109,6 +110,7 @@ cdef class Cache(CacheFacade):
         # Configuration
         self._drop_instruments_on_reset = config.drop_instruments_on_reset
         self.has_backing = database is not None
+        self.persist_account_events = config.persist_account_events
         self.tick_capacity = config.tick_capacity
         self.bar_capacity = config.bar_capacity
         self._specific_venue = None
@@ -124,8 +126,9 @@ cdef class Cache(CacheFacade):
         self._trade_ticks: dict[InstrumentId, deque[TradeTick]] = {}
         self._xrate_symbols: dict[InstrumentId, str] = {}
         self._mark_xrates: dict[tuple[Currency, Currency], double] = {}
-        self._mark_prices: dict[InstrumentId, MarkPriceUpdate] = {}
-        self._index_prices: dict[InstrumentId, IndexPriceUpdate] = {}
+        self._mark_prices: dict[InstrumentId, deque[MarkPriceUpdate]] = {}
+        self._index_prices: dict[InstrumentId, deque[IndexPriceUpdate]] = {}
+        self._funding_rates: dict[InstrumentId, FundingRateUpdate] = {}
         self._bars: dict[BarType, deque[Bar]] = {}
         self._bars_bid: dict[InstrumentId, Bar] = {}
         self._bars_ask: dict[InstrumentId, Bar] = {}
@@ -150,6 +153,7 @@ cdef class Cache(CacheFacade):
         self._index_position_orders: dict[PositionId, set[ClientOrderId]] = {}
         self._index_instrument_orders: dict[InstrumentId, set[ClientOrderId]] = {}
         self._index_instrument_positions: dict[InstrumentId, set[PositionId]] = {}
+        self._index_instrument_position_snapshots: dict[InstrumentId, set[PositionId]] = {}
         self._index_strategy_orders: dict[StrategyId, set[ClientOrderId]] = {}
         self._index_strategy_positions: dict[StrategyId, set[PositionId]] = {}
         self._index_exec_algorithm_orders: dict[ExecAlgorithmId, set[ClientOrderId]] = {}
@@ -266,10 +270,19 @@ cdef class Cache(CacheFacade):
         Clear the current general cache and load the general objects from the
         cache database.
         """
+        cdef double ts_start = time.time()
+        cdef double ts_end
+
         self._log.debug(f"Loading general cache from database")
 
         if self._database is not None:
+            ts_end = time.time()
+            self._log.debug(f"cache_general: Before database.load() took {(ts_end - ts_start) * 1000:.2f}ms")
+
+            ts_start = time.time()
             self._general = self._database.load()
+            ts_end = time.time()
+            self._log.debug(f"cache_general: database.load() took {(ts_end - ts_start) * 1000:.2f}ms")
         else:
             self._general = {}
 
@@ -779,7 +792,12 @@ cdef class Cache(CacheFacade):
         return residuals
 
 
-    cpdef void purge_closed_orders(self, uint64_t ts_now, uint64_t buffer_secs = 0):
+    cpdef void purge_closed_orders(
+        self,
+        uint64_t ts_now,
+        uint64_t buffer_secs = 0,
+        bint purge_from_database = False,
+    ):
         """
         Purge all closed orders from the cache.
 
@@ -791,6 +809,8 @@ cdef class Cache(CacheFacade):
             The purge buffer (seconds) from when the order was closed.
             Only orders that have been closed for at least this amount of time will be purged.
             A value of 0 means purge all closed orders regardless of when they were closed.
+        purge_from_database : bool, default False
+            If purging operations will also delete from the backing database, in addition to the cache.
 
         """
         cdef str buffer_secs_str = f" with {buffer_secs=:_}" if buffer_secs else ""
@@ -800,14 +820,30 @@ cdef class Cache(CacheFacade):
 
         cdef:
             ClientOrderId client_order_id
+            ClientOrderId linked_order_id
             Order order
+            Order linked_order
         for client_order_id in self._index_orders_closed.copy():
             order = self._orders.get(client_order_id)
 
-            if order is not None and order.ts_closed + buffer_ns <= ts_now:
-                self.purge_order(client_order_id)
+            if order is not None and order.is_closed_c() and order.ts_closed + buffer_ns <= ts_now:
+                # Check any linked orders (contingency orders)
+                if order.linked_order_ids is not None:
+                    for linked_order_id in order.linked_order_ids:
+                        linked_order = self._orders.get(linked_order_id)
+                        if linked_order is not None and linked_order.is_open_c():
+                            break  # Do not purge if linked order still open
+                    else:
+                        self.purge_order(client_order_id, purge_from_database)
+                else:
+                    self.purge_order(client_order_id, purge_from_database)
 
-    cpdef void purge_closed_positions(self, uint64_t ts_now, uint64_t buffer_secs = 0):
+    cpdef void purge_closed_positions(
+        self,
+        uint64_t ts_now,
+        uint64_t buffer_secs = 0,
+        bint purge_from_database = False,
+    ):
         """
         Purge all closed positions from the cache.
 
@@ -819,6 +855,8 @@ cdef class Cache(CacheFacade):
             The purge buffer (seconds) from when the position was closed.
             Only positions that have been closed for at least this amount of time will be purged.
             A value of 0 means purge all closed positions regardless of when they were closed.
+        purge_from_database : bool, default False
+            If purging operations will also delete from the backing database, in addition to the cache.
 
         """
         cdef str buffer_secs_str = f" with {buffer_secs=:_}" if buffer_secs else ""
@@ -831,33 +869,37 @@ cdef class Cache(CacheFacade):
         for position_id in self._index_positions_closed.copy():
             position = self._positions.get(position_id)
 
-            if position is not None and position.ts_closed + buffer_ns <= ts_now:
-                self.purge_position(position_id)
+            if position is not None and position.is_closed_c() and position.ts_closed + buffer_ns <= ts_now:
+                self.purge_position(position_id, purge_from_database)
 
-    cpdef void purge_order(self, ClientOrderId client_order_id):
+    cpdef void purge_order(self, ClientOrderId client_order_id, bint purge_from_database = False):
         """
         Purge the order for the given client order ID from the cache (if found).
 
-        All `OrderFilled` events for the order will also be purged from any associated position.
+        For safety, an order is prevented from being purged if it's open.
 
         Parameters
         ----------
         client_order_id : ClientOrderId
             The client order ID to purge.
+        purge_from_database : bool, default False
+            If purging operations will also delete from the backing database, in addition to the cache.
 
         """
         Condition.not_none(client_order_id, "client_order_id")
 
-        cdef Position position = self.position_for_order(client_order_id)
+        # Check if order exists and is safe to purge before popping
+        cdef Order order = self._orders.get(client_order_id)
 
-        if position is not None:
-            position.purge_events_for_order(client_order_id)
-
-        cdef Order order = self._orders.pop(client_order_id, None)
+        if order is not None and order.is_open_c():
+            self._log.warning(f"Order {client_order_id} found open when purging, skipping purge")
+            return
 
         if order is None:
             self._log.warning(f"Order {client_order_id} not found when purging")
         else:
+            # Safe to purge
+            self._orders.pop(client_order_id, None)
             self._index_venue_orders[order.instrument_id.venue].discard(client_order_id)
             self._index_venue_order_ids.pop(order.venue_order_id, None)
             self._index_instrument_orders[order.instrument_id].discard(client_order_id)
@@ -868,37 +910,78 @@ cdef class Cache(CacheFacade):
             if order.exec_algorithm_id is not None:
                 self._index_exec_algorithm_orders[order.exec_algorithm_id].discard(client_order_id)
 
+            # Clean up strategy orders reverse index
+            strategy_orders = self._index_strategy_orders.get(order.strategy_id)
+            if strategy_orders is not None:
+                strategy_orders.discard(client_order_id)
+                if not strategy_orders:
+                    self._index_strategy_orders.pop(order.strategy_id, None)
+
+            # Clean up exec spawn reverse index (if this order is a spawned child)
+            if order.exec_spawn_id is not None:
+                spawn_orders = self._index_exec_spawn_orders.get(order.exec_spawn_id)
+                if spawn_orders is not None:
+                    spawn_orders.discard(client_order_id)
+                    if not spawn_orders:
+                        self._index_exec_spawn_orders.pop(order.exec_spawn_id, None)
+
             self._log.info(f"Purged order {client_order_id}", LogColor.BLUE)
 
+        # Always clean up order indices (even if order was not in cache)
         self._index_order_position.pop(client_order_id, None)
-        self._index_order_strategy.pop(client_order_id, None)
         self._index_order_client.pop(client_order_id, None)
         self._index_client_order_ids.pop(client_order_id, None)
-        self._index_strategy_orders.pop(client_order_id, None)
+        strategy_id = self._index_order_strategy.pop(client_order_id, None)
+
+        # Clean up reverse index when order not in cache (using forward index)
+        if strategy_id is not None:
+            strategy_orders = self._index_strategy_orders.get(strategy_id)
+            if strategy_orders is not None:
+                strategy_orders.discard(client_order_id)
+                if not strategy_orders:
+                    self._index_strategy_orders.pop(strategy_id, None)
+
+        # Remove spawn parent entry if this order was a spawn root
         self._index_exec_spawn_orders.pop(client_order_id, None)
+
         self._index_orders.discard(client_order_id)
         self._index_orders_closed.discard(client_order_id)
         self._index_orders_emulated.discard(client_order_id)
         self._index_orders_inflight.discard(client_order_id)
         self._index_orders_pending_cancel.discard(client_order_id)
 
-    cpdef void purge_position(self, PositionId position_id):
+        # Delete from database if requested
+        if purge_from_database and self._database is not None:
+            self._database.delete_order(client_order_id)
+
+    cpdef void purge_position(self, PositionId position_id, bint purge_from_database = False):
         """
         Purge the position for the given position ID from the cache (if found).
+
+        For safety, a position is prevented from being purged if it's open.
 
         Parameters
         ----------
         position_id : PositionId
             The position ID to purge.
+        purge_from_database : bool, default False
+            If purging operations will also delete from the backing database, in addition to the cache.
 
         """
         Condition.not_none(position_id, "position_id")
 
-        cdef Position position = self._positions.pop(position_id, None)
+        # Check if position exists and is safe to purge before popping
+        cdef Position position = self._positions.get(position_id)
+
+        if position is not None and position.is_open_c():
+            self._log.warning(f"Position {position_id} found open when purging, skipping purge")
+            return
 
         if position is None:
             self._log.warning(f"Position {position_id} not found when purging")
         else:
+            # Safe to purge
+            self._positions.pop(position_id, None)
             self._index_venue_positions[position.instrument_id.venue].discard(position_id)
             self._index_instrument_positions[position.instrument_id].discard(position_id)
             self._index_strategy_positions[position.strategy_id].discard(position_id)
@@ -908,13 +991,36 @@ cdef class Cache(CacheFacade):
 
             self._log.info(f"Purged position {position_id}", LogColor.BLUE)
 
+        # Always clean up position indices (even if position not in cache)
         self._index_position_strategy.pop(position_id, None)
         self._index_position_orders.pop(position_id, None)
         self._index_positions.discard(position_id)
         self._index_positions_open.discard(position_id)
         self._index_positions_closed.discard(position_id)
 
-    cpdef void purge_account_events(self, uint64_t ts_now, uint64_t lookback_secs = 0):
+        # Remove position snapshots and clean up index
+        cdef set[PositionId] snapshot_position_ids
+        cdef list[bytes] snapshots = self._position_snapshots.pop(position_id, None)
+
+        if snapshots is not None and position is not None:
+            snapshot_position_ids = self._index_instrument_position_snapshots.get(position.instrument_id)
+            if snapshot_position_ids:
+                snapshot_position_ids.discard(position_id)
+
+                # Clean up
+                if not snapshot_position_ids:
+                    self._index_instrument_position_snapshots.pop(position.instrument_id, None)
+
+        # Delete from database if requested
+        if purge_from_database and self._database is not None:
+            self._database.delete_position(position_id)
+
+    cpdef void purge_account_events(
+        self,
+        uint64_t ts_now,
+        uint64_t lookback_secs = 0,
+        bint purge_from_database = False,
+    ):
         """
         Purge all account state events which are outside the lookback window.
 
@@ -926,20 +1032,37 @@ cdef class Cache(CacheFacade):
             The purge lookback window (seconds) from when the account state event occurred.
             Only events which are outside the lookback window will be purged.
             A value of 0 means purge all account state events.
+        purge_from_database : bool, default False
+            If purging operations will also delete from the backing database, in addition to the cache.
 
         """
         cdef str lookback_secs_str = f" with {lookback_secs=:_}" if lookback_secs else ""
         self._log.debug(f"Purging account events{lookback_secs_str}", LogColor.MAGENTA)
 
-        cdef:
-            Account account
+        cdef Account account
         for account in self._accounts.values():
             event_count = account.event_count_c()
+
+            # Track events before purging if database deletion is enabled
+            events_before = None
+            if purge_from_database and self._database is not None:
+                events_before = account.events.copy()  # Copy, not alias
+
             account.purge_account_events(ts_now, lookback_secs)
             count_diff = event_count - account.event_count_c()
 
             if count_diff > 0:
                 self._log.info(f"Purged {count_diff} event(s) from account {account.id}", LogColor.BLUE)
+
+                # Delete from database if enabled
+                if purge_from_database and self._database is not None and events_before is not None:
+                    events_after = account.events
+                    event_ids_before = {event.id for event in events_before}
+                    event_ids_after = {event.id for event in events_after}
+                    removed_event_ids = event_ids_before - event_ids_after
+
+                    for event_id in removed_event_ids:
+                        self._database.delete_account_event(account.id, event_id.value)
 
     cpdef void clear_index(self):
         self._log.debug(f"Clearing index")
@@ -956,6 +1079,7 @@ cdef class Cache(CacheFacade):
         self._index_position_orders.clear()
         self._index_instrument_orders.clear()
         self._index_instrument_positions.clear()
+        self._index_instrument_position_snapshots.clear()
         self._index_strategy_orders.clear()
         self._index_strategy_positions.clear()
         self._index_exec_algorithm_orders.clear()
@@ -995,6 +1119,7 @@ cdef class Cache(CacheFacade):
         self._mark_xrates.clear()
         self._mark_prices.clear()
         self._index_prices.clear()
+        self._funding_rates.clear()
         self._bars.clear()
         self._bars_bid.clear()
         self._bars_ask.clear()
@@ -1515,6 +1640,20 @@ cdef class Cache(CacheFacade):
 
         index_prices.appendleft(index_price)
 
+    cpdef void add_funding_rate(self, FundingRateUpdate funding_rate):
+        """
+        Add the given funding rate update to the cache.
+
+        Parameters
+        ----------
+        funding_rate : FundingRateUpdate
+            The funding rate update to add.
+
+        """
+        Condition.not_none(funding_rate, "funding_rate")
+
+        self._funding_rates[funding_rate.instrument_id] = funding_rate
+
     cpdef void add_bar(self, Bar bar):
         """
         Add the given bar to the cache.
@@ -1749,7 +1888,7 @@ cdef class Cache(CacheFacade):
         self._log.debug(f"Indexed {repr(account.id)}")
 
         # Update database
-        if self._database is not None:
+        if self._database is not None and self.persist_account_events:
             self._database.add_account(account)
 
     cpdef void add_venue_order_id(
@@ -2140,6 +2279,14 @@ cdef class Cache(CacheFacade):
         else:
             self._position_snapshots[position_id] = [position_pickled]
 
+        # Update snapshot index
+        cdef InstrumentId instrument_id = position.instrument_id
+        cdef set position_ids = self._index_instrument_position_snapshots.get(instrument_id)
+        if position_ids is not None:
+            position_ids.add(position_id)
+        else:
+            self._index_instrument_position_snapshots[instrument_id] = {position_id}
+
         self._log.debug(f"Snapshot {repr(copied_position)}")
 
     cpdef void snapshot_position_state(
@@ -2218,7 +2365,7 @@ cdef class Cache(CacheFacade):
         Condition.not_none(account, "account")
 
         # Update database
-        if self._database is not None:
+        if self._database is not None and self.persist_account_events:
             self._database.update_account(account)
 
     cpdef void update_order(self, Order order):
@@ -2271,8 +2418,11 @@ cdef class Cache(CacheFacade):
             self._index_orders_emulated.add(order.client_order_id)
 
         # Update own book
-        if self._own_order_books and should_handle_own_book_order(order):
-            self.update_own_order_book(order)
+        if self._own_order_books:
+            own_book = self._own_order_books.get(order.instrument_id)
+            # Only bypass should_handle check for closed orders (to ensure cleanup)
+            if (own_book is not None and order.is_closed_c()) or should_handle_own_book_order(order):
+                self.update_own_order_book(order)
 
         if self._database is None:
             return
@@ -2298,6 +2448,9 @@ cdef class Cache(CacheFacade):
         """
         Update the own order book for the given order.
 
+        Orders without prices (MARKET, etc.) are skipped as they cannot be
+        represented in own books.
+
         Parameters
         ----------
         order : Order
@@ -2306,9 +2459,15 @@ cdef class Cache(CacheFacade):
         """
         Condition.not_none(order, "order")
 
+        if not order.has_price_c():
+            return
+
         own_book = self._own_order_books.get(order.instrument_id)
 
         if own_book is None:
+            if order.is_closed_c():
+                # Don't create own book for closed orders
+                return
             pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(order.instrument_id.value)
             own_book = nautilus_pyo3.OwnOrderBook(pyo3_instrument_id)
             self._own_order_books[order.instrument_id] = own_book
@@ -2317,11 +2476,18 @@ cdef class Cache(CacheFacade):
         own_book_order = order.to_own_book_order()
 
         if order.is_closed_c():
-            own_book.delete(own_book_order)
-            self._log.debug(f"Deleted: {own_book_order!r}", LogColor.MAGENTA)
+            try:
+                own_book.delete(own_book_order)
+                self._log.debug(f"Deleted order {order.client_order_id} from own book")
+            except RuntimeError as e:
+                self._log.debug(f"Failed to delete order {order.client_order_id} from own book: {e}")
         else:
-            own_book.update(own_book_order)
-            self._log.debug(f"Updated: {own_book_order!r}", LogColor.MAGENTA)
+            try:
+                own_book.update(own_book_order)
+            except RuntimeError as e:
+                self._log.debug(f"Failed to update order {order.client_order_id} in own book: {e}; inserting instead")
+                own_book.add(own_book_order)
+            self._log.debug(f"Updated order {order.client_order_id} in own book")
 
     cpdef void update_position(self, Position position):
         """
@@ -2667,7 +2833,7 @@ cdef class Cache(CacheFacade):
         ----------
         instrument_id : InstrumentId
             The instrument ID for the own order book to get.
-            Note this is the standard Cython `InstumentId`.
+            Note this is the standard Cython `InstrumentId`.
 
         Returns
         -------
@@ -2679,7 +2845,13 @@ cdef class Cache(CacheFacade):
 
         return self._own_order_books.get(instrument_id)
 
-    cpdef dict[Decimal, list[Order]] own_bid_orders(self, InstrumentId instrument_id, set[OrderStatus] status = None):
+    cpdef dict[Decimal, list[Order]] own_bid_orders(
+        self,
+        InstrumentId instrument_id,
+        set[OrderStatus] status = None,
+        uint64_t accepted_buffer_ns = 0,
+        uint64_t ts_now = 0,
+    ):
         """
         Return own bid orders for the given instrument ID (if found).
 
@@ -2687,29 +2859,51 @@ cdef class Cache(CacheFacade):
         ----------
         instrument_id : InstrumentId
             The instrument ID for the own orders to get.
-            Note this is the standard Cython `InstumentId`.
+            Note this is the standard Cython `InstrumentId`.
         status : set[OrderStatus], optional
             The order status to filter for. Empty price levels after filtering are excluded from the result.
+        accepted_buffer_ns : uint64_t, optional
+            The minimum time in nanoseconds that must have elapsed since the order was accepted.
+            Orders accepted less than this time ago will be filtered out.
+        ts_now : uint64_t, optional
+            The current time in nanoseconds. Required if accepted_buffer_ns > 0.
 
         Returns
         -------
         dict[Decimal, list[Order]] or ``None``
             If own book not found for the instrument ID then returns ``None``.
 
+        Raises
+        ------
+        ValueError
+            If `accepted_buffer_ns` > 0 and `ts_now` == 0.
+
         """
         Condition.not_none(instrument_id, "instrument_id")
 
-        own_order_book = self._own_order_books.get(instrument_id)
+        if accepted_buffer_ns > 0 and ts_now == 0:
+            raise ValueError("ts_now must be provided when accepted_buffer_ns > 0")
 
+        own_order_book = self._own_order_books.get(instrument_id)
         if own_order_book is None:
             return None
 
         return process_own_order_map(
-            own_order_book.bids_to_dict({order_status_to_pyo3(s) for s in status} if status is not None else None),
+            own_order_book.bids_to_dict(
+                {order_status_to_pyo3(s) for s in status} if status is not None else None,
+                accepted_buffer_ns if accepted_buffer_ns > 0 else None,
+                ts_now if ts_now > 0 else None,
+            ),
             self._orders,
         )
 
-    cpdef dict[Decimal, list[Order]] own_ask_orders(self, InstrumentId instrument_id, set[OrderStatus] status = None):
+    cpdef dict[Decimal, list[Order]] own_ask_orders(
+        self,
+        InstrumentId instrument_id,
+        set[OrderStatus] status = None,
+        uint64_t accepted_buffer_ns = 0,
+        uint64_t ts_now = 0,
+    ):
         """
         Return own ask orders for the given instrument ID (if found).
 
@@ -2717,25 +2911,41 @@ cdef class Cache(CacheFacade):
         ----------
         instrument_id : InstrumentId
             The instrument ID for the own orders to get.
-            Note this is the standard Cython `InstumentId`.
+            Note this is the standard Cython `InstrumentId`.
         status : set[OrderStatus], optional
             The order status to filter for. Empty price levels after filtering are excluded from the result.
+        accepted_buffer_ns : uint64_t, optional
+            The minimum time in nanoseconds that must have elapsed since the order was accepted.
+            Orders accepted less than this time ago will be filtered out.
+        ts_now : uint64_t, optional
+            The current time in nanoseconds. Required if accepted_buffer_ns > 0.
 
         Returns
         -------
         dict[Decimal, list[Order]] or ``None``
             If own book not found for the instrument ID then returns ``None``.
 
+        Raises
+        ------
+        ValueError
+            If `accepted_buffer_ns` > 0 and `ts_now` == 0.
+
         """
         Condition.not_none(instrument_id, "instrument_id")
 
-        own_order_book = self._own_order_books.get(instrument_id)
+        if accepted_buffer_ns > 0 and ts_now == 0:
+            raise ValueError("ts_now must be provided when accepted_buffer_ns > 0")
 
+        own_order_book = self._own_order_books.get(instrument_id)
         if own_order_book is None:
             return None
 
         return process_own_order_map(
-            own_order_book.asks_to_dict({order_status_to_pyo3(s) for s in status} if status is not None else None),
+            own_order_book.asks_to_dict(
+                {order_status_to_pyo3(s) for s in status} if status is not None else None,
+                accepted_buffer_ns if accepted_buffer_ns > 0 else None,
+                ts_now if ts_now > 0 else None,
+            ),
             self._orders,
         )
 
@@ -2878,6 +3088,25 @@ cdef class Cache(CacheFacade):
             return index_prices[index]
         except IndexError:
             return None
+
+    cpdef FundingRateUpdate funding_rate(self, InstrumentId instrument_id):
+        """
+        Return the funding rate for the given instrument ID (if found).
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the funding rate to get.
+
+        Returns
+        -------
+        FundingRateUpdate or ``None``
+            If no funding rate then returns ``None``.
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return self._funding_rates.get(instrument_id)
 
     cpdef Bar bar(self, BarType bar_type, int index = 0):
         """
@@ -4006,7 +4235,7 @@ cdef class Cache(CacheFacade):
         """
         Condition.not_none(client_order_id, "client_order_id")
 
-        self._index_order_client.get(client_order_id)
+        return self._index_order_client.get(client_order_id)
 
     cpdef list orders(
         self,
@@ -4776,6 +5005,44 @@ cdef class Cache(CacheFacade):
 
         return [pickle.loads(s) for s in snapshots]
 
+    cpdef set position_snapshot_ids(self, InstrumentId instrument_id = None):
+        """
+        Return all position IDs for position snapshots with the given instrument filter.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId, optional
+            The instrument ID query filter.
+
+        Returns
+        -------
+        set[PositionId]
+
+        """
+        if instrument_id is not None:
+            return self._index_instrument_position_snapshots.get(instrument_id, set())
+        else:
+            # Return all position IDs that have snapshots
+            return set(self._position_snapshots.keys())
+
+    cpdef list position_snapshot_bytes(self, PositionId position_id):
+        """
+        Return the raw pickled snapshot bytes for the given position ID.
+
+        Parameters
+        ----------
+        position_id : PositionId
+            The position ID to get snapshot bytes for.
+
+        Returns
+        -------
+        list[bytes]
+            The list of pickled snapshot bytes, or empty list if no snapshots exist.
+
+        """
+        Condition.not_none(position_id, "position_id")
+        return self._position_snapshots.get(position_id, [])
+
     cpdef list positions(
         self,
         Venue venue = None,
@@ -5062,12 +5329,60 @@ cdef class Cache(CacheFacade):
 
         self._database.heartbeat(timestamp)
 
+    cpdef void force_remove_from_own_order_book(self, ClientOrderId client_order_id):
+        """
+        Force removal of an order from own order books and clean up all indexes.
+
+        This method is used when order.apply() fails and we need to ensure terminal
+        orders are properly cleaned up from own books and all relevant indexes.
+        Replicates the index cleanup that update_order performs for closed orders.
+
+        Parameters
+        ----------
+        client_order_id : ClientOrderId
+            The client order ID to remove.
+
+        """
+        Condition.not_none(client_order_id, "client_order_id")
+
+        cdef Order order = self._orders.get(client_order_id)
+        if order is None:
+            return
+
+        # Remove from all open/active indexes (mirrors update_order for closed orders)
+        self._index_orders_open.discard(client_order_id)
+        self._index_orders_pending_cancel.discard(client_order_id)
+        self._index_orders_inflight.discard(client_order_id)
+        self._index_orders_emulated.discard(client_order_id)
+
+        if self._own_order_books:
+            self._index_orders_open_pyo3.discard(nautilus_pyo3.ClientOrderId(client_order_id.value))
+
+            own_book = self._own_order_books.get(order.instrument_id)
+            if own_book is not None:
+                try:
+                    own_book_order = order.to_own_book_order()
+                    own_book.delete(own_book_order)
+                    self._log.debug(
+                        f"Force deleted {client_order_id!r} from own book",
+                        LogColor.MAGENTA,
+                    )
+                except Exception as e:
+                    self._log.debug(
+                        f"Could not force delete {client_order_id!r} from own book: {e}",
+                        LogColor.MAGENTA,
+                    )
+
+        self._index_orders_closed.add(client_order_id)
+
     cpdef void audit_own_order_books(self):
         """
-        Audit all own order books against public order books.
+        Audit all own order books against open and inflight order indexes.
 
-        Ensures:
-         - Closed orders are removed from own order books.
+        Ensures closed orders are removed from own order books. This includes both
+        orders tracked in _index_orders_open (ACCEPTED, TRIGGERED, PENDING_*, PARTIALLY_FILLED)
+        and _index_orders_inflight (INITIALIZED, SUBMITTED) to prevent false positives
+        during venue latency windows.
 
         Logs all failures as errors.
 
@@ -5075,8 +5390,19 @@ cdef class Cache(CacheFacade):
         self._log.debug("Starting own books audit", LogColor.MAGENTA)
         cdef double start_us = time.time() * 1_000_000
 
+        # Build union of open and inflight orders for audit,
+        # this prevents false positives for SUBMITTED orders during venue latency.
+        cdef set valid_order_ids = set()
+        for client_order_id in self._index_orders_open:
+            if self._own_order_books:
+                valid_order_ids.add(nautilus_pyo3.ClientOrderId(client_order_id.value))
+
+        for client_order_id in self._index_orders_inflight:
+            if self._own_order_books:
+                valid_order_ids.add(nautilus_pyo3.ClientOrderId(client_order_id.value))
+
         for own_book in self._own_order_books.values():
-            own_book.audit_open_orders(self._index_orders_open_pyo3)
+            own_book.audit_open_orders(valid_order_ids)
 
         cdef double audit_us = (time.time() * 1_000_000) - start_us
         self._log.debug(f"Completed own books audit in {int(audit_us)}us", LogColor.MAGENTA)
@@ -5100,7 +5426,7 @@ cdef inline dict[Decimal, list[Order]] process_own_order_map(
             order = order_cache.get(client_order_id)
 
             if order is None:
-                RuntimeError(f"{client_order_id!r} from own book not found in cache")
+                raise RuntimeError(f"{client_order_id!r} from own book not found in cache")
 
             orders.append(order)
 

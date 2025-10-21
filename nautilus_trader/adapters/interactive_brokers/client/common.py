@@ -33,6 +33,7 @@ from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.model.data import BarType
+from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 
 
@@ -526,9 +527,11 @@ class BaseMixin:
     _reconnect_delay: int
     _max_reconnect_attempts: int
     _indefinite_reconnect: bool
+    _last_disconnection_ns: int | None
 
     # MarketData
     _bar_type_to_last_bar: dict[str, BarData | None]
+    _bar_timeout_tasks: dict[str, Any]  # asyncio.Task
     _order_id_to_order_ref: dict[int, AccountOrderRef]
 
     # Order
@@ -537,3 +540,26 @@ class BaseMixin:
         str,
         dict[str, Execution | (CommissionReport | str)],
     ]
+
+
+class IBKRBookLevel(msgspec.Struct, frozen=True):
+    """
+    Single price level in the order book.
+
+    Attributes
+    ----------
+    price : float
+        Price at this level.
+    size : Decimal
+        Total size/quantity at this price.
+    side : OrderSide
+        Side of the order at this price.
+    market_maker : str
+        Market maker identifier providing this quote.
+
+    """
+
+    price: float
+    size: Decimal
+    side: OrderSide
+    market_maker: str

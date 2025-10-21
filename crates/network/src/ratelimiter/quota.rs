@@ -31,7 +31,7 @@ use super::nanos::Nanos;
 /// There are multiple ways of expressing the same quota: a quota given as `Quota::per_second(1)`
 /// allows, on average, the same number of cells through as a quota given as `Quota::per_minute(60)`.
 /// The quota of `Quota::per_minute(60)` has a burst size of 60 cells, meaning it is
-/// possible to accomodate 60 cells in one go, after which the equivalent of a minute of inactivity
+/// possible to accommodate 60 cells in one go, after which the equivalent of a minute of inactivity
 /// is required for the burst allowance to be fully restored.
 ///
 /// Burst size gets really important when you construct a rate limiter that should allow multiple
@@ -183,11 +183,11 @@ impl Quota {
         let tau_u64 = tau.as_u64();
 
         // Validate division won't be zero or overflow
-        assert!((t_u64 != 0), "Invalid GCRA parameter: t cannot be zero");
+        assert!(t_u64 != 0, "Invalid GCRA parameter: t cannot be zero");
 
         let division_result = tau_u64 / t_u64;
         assert!(
-            (division_result != 0),
+            division_result != 0,
             "Invalid GCRA parameters: tau/t results in zero burst capacity"
         );
         assert!(

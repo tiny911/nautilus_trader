@@ -446,7 +446,7 @@ mod tests {
         );
 
         // Allow time for logs to be written
-        sleep(Duration::from_millis(100));
+        sleep(Duration::from_millis(200));
 
         drop(log_guard);
 
@@ -472,7 +472,7 @@ mod tests {
 
         // Debug: print file contents if test is failing
         if !log_contents.contains("This is a trace message") {
-            println!("File contents:\n{}", log_contents);
+            println!("File contents:\n{log_contents}");
         }
 
         // Verify that all log levels are present

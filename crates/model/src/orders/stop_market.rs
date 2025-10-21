@@ -439,9 +439,21 @@ impl Order for StopMarketOrder {
         if let OrderEventAny::Updated(ref event) = event {
             self.update(event);
         };
+
         let is_order_filled = matches!(event, OrderEventAny::Filled(_));
+        let is_order_triggered = matches!(event, OrderEventAny::Triggered(_));
+        let ts_event = if is_order_triggered {
+            Some(event.ts_event())
+        } else {
+            None
+        };
 
         self.core.apply(event)?;
+
+        if is_order_triggered {
+            self.is_triggered = true;
+            self.ts_triggered = ts_event;
+        }
 
         if is_order_filled {
             self.core.set_slippage(self.trigger_price);
@@ -458,7 +470,7 @@ impl Order for StopMarketOrder {
         }
 
         self.quantity = event.quantity;
-        self.leaves_qty = self.quantity - self.filled_qty;
+        self.leaves_qty = self.quantity.saturating_sub(self.filled_qty);
     }
 
     fn is_triggered(&self) -> Option<bool> {
@@ -486,7 +498,7 @@ impl Order for StopMarketOrder {
     }
 
     fn set_liquidity_side(&mut self, liquidity_side: LiquiditySide) {
-        self.liquidity_side = Some(liquidity_side)
+        self.liquidity_side = Some(liquidity_side);
     }
 
     fn would_reduce_only(&self, side: PositionSide, position_qty: Quantity) -> bool {
@@ -669,7 +681,7 @@ mod tests {
             .build();
     }
 
-    #[test]
+    #[rstest]
     fn test_stop_market_order_update() {
         // Create and accept a basic stop market order
         let order = OrderTestBuilder::new(OrderType::StopMarket)
@@ -699,7 +711,7 @@ mod tests {
         assert_eq!(accepted_order.trigger_price(), Some(updated_trigger_price));
     }
 
-    #[test]
+    #[rstest]
     fn test_stop_market_order_expire_time() {
         // Create a stop market order with an expire time
         let expire_time = UnixNanos::from(1234567890);
@@ -714,7 +726,7 @@ mod tests {
         assert_eq!(order.expire_time(), Some(expire_time));
     }
 
-    #[test]
+    #[rstest]
     fn test_stop_market_order_trigger_instrument_id() {
         // Create a stop market order with a trigger instrument ID
         let trigger_instrument_id = InstrumentId::from("ETH-USDT.BINANCE");
@@ -722,14 +734,14 @@ mod tests {
             .instrument_id(InstrumentId::from("BTC-USDT.BINANCE"))
             .quantity(Quantity::from(10))
             .trigger_price(Price::new(100.0, 2))
-            .trigger_instrument_id(trigger_instrument_id.clone())
+            .trigger_instrument_id(trigger_instrument_id)
             .build();
 
         // Assert that the trigger instrument ID is set correctly
         assert_eq!(order.trigger_instrument_id(), Some(trigger_instrument_id));
     }
 
-    #[test]
+    #[rstest]
     fn test_stop_market_order_from_order_initialized() {
         // Create an OrderInitialized event with required fields
         let order_initialized = OrderInitializedBuilder::default()
@@ -753,7 +765,7 @@ mod tests {
         assert_eq!(order.trigger_type(), order_initialized.trigger_type);
     }
 
-    #[test]
+    #[rstest]
     fn test_stop_market_order_is_triggered() {
         // Create a stop market order
         let order = OrderTestBuilder::new(OrderType::StopMarket)

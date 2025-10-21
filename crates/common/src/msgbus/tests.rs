@@ -79,7 +79,7 @@ fn test_get_response_handler_when_already_registered() {
         .register_response_handler(&request_id, handler.clone())
         .unwrap();
 
-    let result = msgbus_ref.register_response_handler(&request_id, handler.clone());
+    let result = msgbus_ref.register_response_handler(&request_id, handler);
     assert!(result.is_err());
 }
 
@@ -91,7 +91,7 @@ fn test_get_response_handler_when_registered() {
 
     let request_id = UUID4::new();
     msgbus_ref
-        .register_response_handler(&request_id, handler.clone())
+        .register_response_handler(&request_id, handler)
         .unwrap();
 
     let handler = msgbus_ref.get_response_handler(&request_id).unwrap();
@@ -105,7 +105,7 @@ fn test_is_registered_when_no_registrations() {
 }
 
 #[rstest]
-fn test_regsiter_endpoint() {
+fn test_register_endpoint() {
     let msgbus = get_message_bus();
     let endpoint = "MyEndpoint".into();
     let handler = get_stub_shareable_handler(None);
@@ -237,7 +237,7 @@ fn convert_pattern_to_regex(pattern: &str) -> String {
         match c {
             '.' => regex.push_str("\\."),
             '*' => regex.push_str(".*"),
-            '?' => regex.push_str("."),
+            '?' => regex.push('.'),
             _ => regex.push(c),
         }
     }
@@ -291,11 +291,7 @@ fn test_matching_backtracking() {
         assert_eq!(
             is_matching_backtracking(topic.into(), pattern.as_str().into()),
             regex.is_match(topic),
-            "Failed to match on iteration: {}, pattern: \"{}\", topic: {}, regex: \"{}\"",
-            i,
-            pattern,
-            topic,
-            regex_pattern
+            "Failed to match on iteration: {i}, pattern: \"{pattern}\", topic: {topic}, regex: \"{regex_pattern}\""
         );
     }
 }
@@ -412,7 +408,7 @@ fn subscription_model_fuzz_testing() {
                 let (handler_id, handler) = &handlers[handler_idx];
 
                 // Apply to reference model
-                model.subscribe(&pattern, handler_id);
+                model.subscribe(pattern, handler_id);
 
                 // Apply to message bus
                 msgbus::subscribe(pattern.as_str().into(), handler.clone(), None);
@@ -422,11 +418,9 @@ fn subscription_model_fuzz_testing() {
                     msgbus.borrow().subscriptions().len()
                 );
 
-                assert_eq!(
+                assert!(
                     msgbus.borrow().is_subscribed(pattern, handler.clone()),
-                    true,
-                    "Op {}: is_subscribed should return true after subscribe",
-                    op_num
+                    "Op {op_num}: is_subscribed should return true after subscribe"
                 );
             }
 
@@ -453,11 +447,9 @@ fn subscription_model_fuzz_testing() {
                         model.subscription_count(),
                         msgbus.borrow().subscriptions().len()
                     );
-                    assert_eq!(
-                        msgbus.borrow().is_subscribed(pattern, handler.clone()),
-                        false,
-                        "Op {}: is_subscribed should return false after unsubscribe",
-                        op_num
+                    assert!(
+                        !msgbus.borrow().is_subscribed(pattern, handler.clone()),
+                        "Op {op_num}: is_subscribed should return false after unsubscribe"
                     );
                 }
             }
@@ -475,8 +467,7 @@ fn subscription_model_fuzz_testing() {
 
                 assert_eq!(
                     expected, actual,
-                    "Op {}: Subscription state mismatch for pattern '{}', handler '{}': expected={}, actual={}",
-                    op_num, pattern, handler_id, expected, actual
+                    "Op {op_num}: Subscription state mismatch for pattern '{pattern}', handler '{handler_id}': expected={expected}, actual={actual}"
                 );
             }
 

@@ -191,83 +191,18 @@ pub fn get_time_bar_start(
 
     match spec.aggregation {
         BarAggregation::Millisecond => {
-            let mut start_time = now.trunc_subsecs(0);
-            start_time += origin_offset;
-
-            if now < start_time {
-                start_time -= Duration::seconds(1);
-            }
-
-            while start_time <= now {
-                start_time += Duration::milliseconds(step);
-            }
-
-            start_time -= Duration::milliseconds(step);
-            start_time
+            find_closest_smaller_time(now, origin_offset, Duration::milliseconds(step))
         }
         BarAggregation::Second => {
-            let mut start_time = now.trunc_subsecs(0) - Duration::seconds(now.second() as i64);
-            start_time += origin_offset;
-
-            if now < start_time {
-                start_time -= Duration::minutes(1);
-            }
-
-            while start_time <= now {
-                start_time += Duration::seconds(step);
-            }
-
-            start_time -= Duration::seconds(step);
-            start_time
+            find_closest_smaller_time(now, origin_offset, Duration::seconds(step))
         }
         BarAggregation::Minute => {
-            let mut start_time = now.trunc_subsecs(0)
-                - Duration::seconds(now.second() as i64)
-                - Duration::minutes(now.minute() as i64);
-            start_time += origin_offset;
-
-            if now < start_time {
-                start_time -= Duration::hours(1);
-            }
-
-            while start_time <= now {
-                start_time += Duration::minutes(step);
-            }
-
-            start_time -= Duration::minutes(step);
-            start_time
+            find_closest_smaller_time(now, origin_offset, Duration::minutes(step))
         }
         BarAggregation::Hour => {
-            let mut start_time = now.trunc_subsecs(0)
-                - Duration::seconds(now.second() as i64)
-                - Duration::minutes(now.minute() as i64)
-                - Duration::hours(now.hour() as i64);
-            start_time += origin_offset;
-
-            if now < start_time {
-                start_time -= Duration::days(1);
-            }
-
-            while start_time <= now {
-                start_time += Duration::hours(step);
-            }
-
-            start_time -= Duration::hours(step);
-            start_time
+            find_closest_smaller_time(now, origin_offset, Duration::hours(step))
         }
-        BarAggregation::Day => {
-            let mut start_time = now.trunc_subsecs(0)
-                - Duration::seconds(now.second() as i64)
-                - Duration::minutes(now.minute() as i64)
-                - Duration::hours(now.hour() as i64);
-            start_time += origin_offset;
-
-            if now < start_time {
-                start_time -= Duration::days(1);
-            }
-
-            start_time
-        }
+        BarAggregation::Day => find_closest_smaller_time(now, origin_offset, Duration::days(step)),
         BarAggregation::Week => {
             let mut start_time = now.trunc_subsecs(0)
                 - Duration::seconds(now.second() as i64)
@@ -313,6 +248,29 @@ pub fn get_time_bar_start(
             spec.aggregation
         ),
     }
+}
+
+/// Finds the closest smaller time based on a daily time origin and period.
+///
+/// This function calculates the most recent time that is aligned with the given period
+/// and is less than or equal to the current time.
+fn find_closest_smaller_time(
+    now: DateTime<Utc>,
+    daily_time_origin: TimeDelta,
+    period: TimeDelta,
+) -> DateTime<Utc> {
+    // Floor to start of day
+    let day_start = now.trunc_subsecs(0)
+        - Duration::seconds(now.second() as i64)
+        - Duration::minutes(now.minute() as i64)
+        - Duration::hours(now.hour() as i64);
+    let base_time = day_start + daily_time_origin;
+
+    let time_difference = now - base_time;
+    let num_periods = (time_difference.num_nanoseconds().unwrap_or(0)
+        / period.num_nanoseconds().unwrap_or(1)) as i32;
+
+    base_time + period * num_periods
 }
 
 /// Represents a bar aggregation specification including a step, aggregation
@@ -516,24 +474,24 @@ impl BarType {
     /// Returns whether this instance is a standard bar type.
     pub fn is_standard(&self) -> bool {
         match &self {
-            BarType::Standard { .. } => true,
-            BarType::Composite { .. } => false,
+            Self::Standard { .. } => true,
+            Self::Composite { .. } => false,
         }
     }
 
     /// Returns whether this instance is a composite bar type.
     pub fn is_composite(&self) -> bool {
         match &self {
-            BarType::Standard { .. } => false,
-            BarType::Composite { .. } => true,
+            Self::Standard { .. } => false,
+            Self::Composite { .. } => true,
         }
     }
 
     /// Returns the standard bar type component.
     pub fn standard(&self) -> Self {
         match &self {
-            &&b @ BarType::Standard { .. } => b,
-            BarType::Composite {
+            &&b @ Self::Standard { .. } => b,
+            Self::Composite {
                 instrument_id,
                 spec,
                 aggregation_source,
@@ -545,8 +503,8 @@ impl BarType {
     /// Returns any composite bar type component.
     pub fn composite(&self) -> Self {
         match &self {
-            &&b @ BarType::Standard { .. } => b, // case shouldn't be used if is_composite is called before
-            BarType::Composite {
+            &&b @ Self::Standard { .. } => b, // case shouldn't be used if is_composite is called before
+            Self::Composite {
                 instrument_id,
                 spec,
                 aggregation_source: _,
@@ -565,7 +523,7 @@ impl BarType {
     /// Returns the [`InstrumentId`] for this bar type.
     pub fn instrument_id(&self) -> InstrumentId {
         match &self {
-            BarType::Standard { instrument_id, .. } | BarType::Composite { instrument_id, .. } => {
+            Self::Standard { instrument_id, .. } | Self::Composite { instrument_id, .. } => {
                 *instrument_id
             }
         }
@@ -574,17 +532,17 @@ impl BarType {
     /// Returns the [`BarSpecification`] for this bar type.
     pub fn spec(&self) -> BarSpecification {
         match &self {
-            BarType::Standard { spec, .. } | BarType::Composite { spec, .. } => *spec,
+            Self::Standard { spec, .. } | Self::Composite { spec, .. } => *spec,
         }
     }
 
     /// Returns the [`AggregationSource`] for this bar type.
     pub fn aggregation_source(&self) -> AggregationSource {
         match &self {
-            BarType::Standard {
+            Self::Standard {
                 aggregation_source, ..
             }
-            | BarType::Composite {
+            | Self::Composite {
                 aggregation_source, ..
             } => *aggregation_source,
         }
@@ -708,14 +666,14 @@ impl From<&str> for BarType {
 impl Display for BarType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            BarType::Standard {
+            Self::Standard {
                 instrument_id,
                 spec,
                 aggregation_source,
             } => {
                 write!(f, "{instrument_id}-{spec}-{aggregation_source}")
             }
-            BarType::Composite {
+            Self::Composite {
                 instrument_id,
                 spec,
                 aggregation_source,
@@ -908,6 +866,8 @@ impl HasTsInit for Bar {
 ////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use chrono::TimeZone;
     use rstest::rstest;
 
@@ -1097,6 +1057,25 @@ mod tests {
         );
         assert_eq!(bar_type.aggregation_source(), AggregationSource::External);
         assert_eq!(bar_type, BarType::from(input));
+    }
+
+    #[rstest]
+    fn test_bar_type_from_str_with_utf8_symbol() {
+        let non_ascii_instrument = "TËST-PÉRP.BINANCE";
+        let non_ascii_bar_type = "TËST-PÉRP.BINANCE-1-MINUTE-LAST-EXTERNAL";
+
+        let bar_type = BarType::from_str(non_ascii_bar_type).unwrap();
+
+        assert_eq!(
+            bar_type.instrument_id(),
+            InstrumentId::from_str(non_ascii_instrument).unwrap()
+        );
+        assert_eq!(
+            bar_type.spec(),
+            BarSpecification::new(1, BarAggregation::Minute, PriceType::Last)
+        );
+        assert_eq!(bar_type.aggregation_source(), AggregationSource::External);
+        assert_eq!(bar_type.to_string(), non_ascii_bar_type);
     }
 
     #[rstest]

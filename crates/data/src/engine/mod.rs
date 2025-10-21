@@ -32,6 +32,9 @@ pub mod book;
 pub mod config;
 mod handlers;
 
+#[cfg(feature = "defi")]
+pub mod pool;
+
 use std::{
     any::Any,
     cell::{Ref, RefCell},
@@ -42,14 +45,10 @@ use std::{
 };
 
 use ahash::{AHashMap, AHashSet};
-#[cfg(feature = "defi")]
-use alloy_primitives::Address;
 use book::{BookSnapshotInfo, BookSnapshotter, BookUpdater};
 use config::DataEngineConfig;
 use handlers::{BarBarHandler, BarQuoteHandler, BarTradeHandler};
 use indexmap::IndexMap;
-#[cfg(feature = "defi")]
-use nautilus_common::messages::defi::{DefiSubscribeCommand, DefiUnsubscribeCommand};
 use nautilus_common::{
     cache::Cache,
     clock::Clock,
@@ -61,7 +60,7 @@ use nautilus_common::{
         UnsubscribeCommand,
     },
     msgbus::{self, MStr, Topic, handler::ShareableMessageHandler, switchboard},
-    timer::TimeEventCallback,
+    timer::{TimeEvent, TimeEventCallback},
 };
 use nautilus_core::{
     correctness::{
@@ -70,15 +69,11 @@ use nautilus_core::{
     datetime::millis_to_nanos,
 };
 #[cfg(feature = "defi")]
-use nautilus_model::defi::Blockchain;
-#[cfg(feature = "defi")]
 use nautilus_model::defi::DefiData;
 use nautilus_model::{
     data::{
-        Bar, BarType, Data, DataType, OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick,
-        TradeTick,
-        close::InstrumentClose,
-        prices::{IndexPriceUpdate, MarkPriceUpdate},
+        Bar, BarType, Data, DataType, FundingRateUpdate, IndexPriceUpdate, InstrumentClose,
+        MarkPriceUpdate, OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
     },
     enums::{AggregationSource, BarAggregation, BookType, PriceType, RecordFlag},
     identifiers::{ClientId, InstrumentId, Venue},
@@ -88,10 +83,15 @@ use nautilus_model::{
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use ustr::Ustr;
 
+#[cfg(feature = "defi")]
+#[allow(unused_imports)] // Brings DeFi impl blocks into scope
+use crate::defi::engine as _;
+#[cfg(feature = "defi")]
+use crate::engine::pool::PoolUpdater;
 use crate::{
     aggregation::{
-        BarAggregator, TickBarAggregator, TimeBarAggregator, ValueBarAggregator,
-        VolumeBarAggregator,
+        BarAggregator, RenkoBarAggregator, TickBarAggregator, TimeBarAggregator,
+        ValueBarAggregator, VolumeBarAggregator,
     },
     client::DataClientAdapter,
 };
@@ -99,11 +99,11 @@ use crate::{
 /// Provides a high-performance `DataEngine` for all environments.
 #[derive(Debug)]
 pub struct DataEngine {
-    clock: Rc<RefCell<dyn Clock>>,
-    cache: Rc<RefCell<Cache>>,
+    pub(crate) clock: Rc<RefCell<dyn Clock>>,
+    pub(crate) cache: Rc<RefCell<Cache>>,
+    pub(crate) external_clients: AHashSet<ClientId>,
     clients: IndexMap<ClientId, DataClientAdapter>,
     default_client: Option<DataClientAdapter>,
-    external_clients: AHashSet<ClientId>,
     catalogs: AHashMap<Ustr, ParquetDataCatalog>,
     routing_map: IndexMap<Venue, ClientId>,
     book_intervals: AHashMap<NonZeroUsize, AHashSet<InstrumentId>>,
@@ -114,8 +114,16 @@ pub struct DataEngine {
     _synthetic_quote_feeds: AHashMap<InstrumentId, Vec<SyntheticInstrument>>,
     _synthetic_trade_feeds: AHashMap<InstrumentId, Vec<SyntheticInstrument>>,
     buffered_deltas_map: AHashMap<InstrumentId, OrderBookDeltas>,
-    msgbus_priority: u8,
-    config: DataEngineConfig,
+    pub(crate) msgbus_priority: u8,
+    pub(crate) config: DataEngineConfig,
+    #[cfg(feature = "defi")]
+    pub(crate) pool_updaters: AHashMap<InstrumentId, Rc<PoolUpdater>>,
+    #[cfg(feature = "defi")]
+    pub(crate) pool_updaters_pending: AHashSet<InstrumentId>,
+    #[cfg(feature = "defi")]
+    pub(crate) pool_snapshot_pending: AHashSet<InstrumentId>,
+    #[cfg(feature = "defi")]
+    pub(crate) pool_event_buffers: AHashMap<InstrumentId, Vec<DefiData>>,
 }
 
 impl DataEngine {
@@ -138,9 +146,9 @@ impl DataEngine {
         Self {
             clock,
             cache,
+            external_clients,
             clients: IndexMap::new(),
             default_client: None,
-            external_clients,
             catalogs: AHashMap::new(),
             routing_map: IndexMap::new(),
             book_intervals: AHashMap::new(),
@@ -153,6 +161,14 @@ impl DataEngine {
             buffered_deltas_map: AHashMap::new(),
             msgbus_priority: 10, // High-priority for built-in component
             config,
+            #[cfg(feature = "defi")]
+            pool_updaters: AHashMap::new(),
+            #[cfg(feature = "defi")]
+            pool_updaters_pending: AHashSet::new(),
+            #[cfg(feature = "defi")]
+            pool_snapshot_pending: AHashSet::new(),
+            #[cfg(feature = "defi")]
+            pool_event_buffers: AHashMap::new(),
         }
     }
 
@@ -166,6 +182,12 @@ impl DataEngine {
     #[must_use]
     pub fn get_cache(&self) -> Ref<'_, Cache> {
         self.cache.borrow()
+    }
+
+    /// Returns the `Rc<RefCell<Cache>>` used by this engine.
+    #[must_use]
+    pub fn cache_rc(&self) -> Rc<RefCell<Cache>> {
+        Rc::clone(&self.cache)
     }
 
     /// Registers the `catalog` with the engine with an optional specific `name`.
@@ -278,7 +300,7 @@ impl DataEngine {
         }
     }
 
-    /// Disposes the engine, stopping all clients and cancelling any timers.
+    /// Disposes the engine, stopping all clients and canceling any timers.
     pub fn dispose(&mut self) {
         for client in self.get_clients_mut() {
             if let Err(e) = client.dispose() {
@@ -316,7 +338,7 @@ impl DataEngine {
 
     // -- SUBSCRIPTIONS ---------------------------------------------------------------------------
 
-    fn collect_subscriptions<F, T>(&self, get_subs: F) -> Vec<T>
+    pub(crate) fn collect_subscriptions<F, T>(&self, get_subs: F) -> Vec<T>
     where
         F: Fn(&DataClientAdapter) -> &AHashSet<T>,
         T: Clone,
@@ -443,6 +465,12 @@ impl DataEngine {
         self.collect_subscriptions(|client| &client.subscriptions_index_prices)
     }
 
+    /// Returns all instrument IDs for which funding rate subscriptions exist.
+    #[must_use]
+    pub fn subscribed_funding_rates(&self) -> Vec<InstrumentId> {
+        self.collect_subscriptions(|client| &client.subscriptions_funding_rates)
+    }
+
     /// Returns all instrument IDs for which status subscriptions exist.
     #[must_use]
     pub fn subscribed_instrument_status(&self) -> Vec<InstrumentId> {
@@ -453,34 +481,6 @@ impl DataEngine {
     #[must_use]
     pub fn subscribed_instrument_close(&self) -> Vec<InstrumentId> {
         self.collect_subscriptions(|client| &client.subscriptions_instrument_close)
-    }
-
-    #[cfg(feature = "defi")]
-    /// Returns all blockchains for which blocks subscriptions exist.
-    #[must_use]
-    pub fn subscribed_blocks(&self) -> Vec<Blockchain> {
-        self.collect_subscriptions(|client| &client.subscriptions_blocks)
-    }
-
-    #[cfg(feature = "defi")]
-    /// Returns all pool addresses for which pool subscriptions exist.
-    #[must_use]
-    pub fn subscribed_pools(&self) -> Vec<Address> {
-        self.collect_subscriptions(|client| &client.subscriptions_pools)
-    }
-
-    #[cfg(feature = "defi")]
-    /// Returns all pool addresses for which swap subscriptions exist.
-    #[must_use]
-    pub fn subscribed_pool_swaps(&self) -> Vec<Address> {
-        self.collect_subscriptions(|client| &client.subscriptions_pool_swaps)
-    }
-
-    #[cfg(feature = "defi")]
-    /// Returns all pool addresses for which liquidity update subscriptions exist.
-    #[must_use]
-    pub fn subscribed_pool_liquidity_updates(&self) -> Vec<Address> {
-        self.collect_subscriptions(|client| &client.subscriptions_pool_liquidity_updates)
     }
 
     // -- COMMANDS --------------------------------------------------------------------------------
@@ -494,9 +494,15 @@ impl DataEngine {
             DataCommand::Unsubscribe(c) => self.execute_unsubscribe(c),
             DataCommand::Request(c) => self.execute_request(c),
             #[cfg(feature = "defi")]
+            DataCommand::DefiRequest(c) => self.execute_defi_request(c),
+            #[cfg(feature = "defi")]
             DataCommand::DefiSubscribe(c) => self.execute_defi_subscribe(c),
             #[cfg(feature = "defi")]
             DataCommand::DefiUnsubscribe(c) => self.execute_defi_unsubscribe(c),
+            _ => {
+                log::warn!("Unhandled DataCommand variant: {cmd:?}");
+                Ok(())
+            }
         } {
             log::error!("{e}");
         }
@@ -518,45 +524,17 @@ impl DataEngine {
             _ => {} // Do nothing else
         }
 
-        // Check if client declared as external
         if let Some(client_id) = cmd.client_id()
             && self.external_clients.contains(client_id)
         {
+            if self.config.debug {
+                log::debug!("Skipping subscribe command for external client {client_id}: {cmd:?}",);
+            }
             return Ok(());
         }
 
-        // Forward command to client
         if let Some(client) = self.get_client(cmd.client_id(), cmd.venue()) {
             client.execute_subscribe(cmd);
-        } else {
-            log::error!(
-                "Cannot handle command: no client found for client_id={:?}, venue={:?}",
-                cmd.client_id(),
-                cmd.venue(),
-            );
-        }
-
-        Ok(())
-    }
-
-    #[cfg(feature = "defi")]
-    /// Handles a subscribe command, updating internal state and forwarding to the client.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the subscription is invalid (e.g., synthetic instrument for book data),
-    /// or if the underlying client operation fails.
-    pub fn execute_defi_subscribe(&mut self, cmd: &DefiSubscribeCommand) -> anyhow::Result<()> {
-        // Check if client declared as external
-        if let Some(client_id) = cmd.client_id()
-            && self.external_clients.contains(client_id)
-        {
-            return Ok(());
-        }
-
-        // Forward command to client
-        if let Some(client) = self.get_client(cmd.client_id(), cmd.venue()) {
-            client.execute_defi_subscribe(cmd);
         } else {
             log::error!(
                 "Cannot handle command: no client found for client_id={:?}, venue={:?}",
@@ -582,44 +560,19 @@ impl DataEngine {
             _ => {} // Do nothing else
         }
 
-        // Check if client declared as external
         if let Some(client_id) = cmd.client_id()
             && self.external_clients.contains(client_id)
         {
+            if self.config.debug {
+                log::debug!(
+                    "Skipping unsubscribe command for external client {client_id}: {cmd:?}",
+                );
+            }
             return Ok(());
         }
 
-        // Forward command to the client
         if let Some(client) = self.get_client(cmd.client_id(), cmd.venue()) {
             client.execute_unsubscribe(cmd);
-        } else {
-            log::error!(
-                "Cannot handle command: no client found for client_id={:?}, venue={:?}",
-                cmd.client_id(),
-                cmd.venue(),
-            );
-        }
-
-        Ok(())
-    }
-
-    #[cfg(feature = "defi")]
-    /// Handles an unsubscribe command, updating internal state and forwarding to the client.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying client operation fails.
-    pub fn execute_defi_unsubscribe(&mut self, cmd: &DefiUnsubscribeCommand) -> anyhow::Result<()> {
-        // Check if client declared as external
-        if let Some(client_id) = cmd.client_id()
-            && self.external_clients.contains(client_id)
-        {
-            return Ok(());
-        }
-
-        // Forward command to the client
-        if let Some(client) = self.get_client(cmd.client_id(), cmd.venue()) {
-            client.execute_defi_unsubscribe(cmd);
         } else {
             log::error!(
                 "Cannot handle command: no client found for client_id={:?}, venue={:?}",
@@ -642,6 +595,9 @@ impl DataEngine {
         if let Some(cid) = req.client_id()
             && self.external_clients.contains(cid)
         {
+            if self.config.debug {
+                log::debug!("Skipping data request for external client {cid}: {req:?}");
+            }
             return Ok(());
         }
         if let Some(client) = self.get_client(req.client_id(), req.venue()) {
@@ -650,6 +606,7 @@ impl DataEngine {
                 RequestCommand::Instrument(req) => client.request_instrument(req),
                 RequestCommand::Instruments(req) => client.request_instruments(req),
                 RequestCommand::BookSnapshot(req) => client.request_book_snapshot(req),
+                RequestCommand::BookDepth(req) => client.request_book_depth(req),
                 RequestCommand::Quotes(req) => client.request_quotes(req),
                 RequestCommand::Trades(req) => client.request_trades(req),
                 RequestCommand::Bars(req) => client.request_bars(req),
@@ -665,7 +622,7 @@ impl DataEngine {
 
     /// Processes a dynamically-typed data message.
     ///
-    /// Currently supports `InstrumentAny`; unrecognized types are logged as errors.
+    /// Currently supports `InstrumentAny` and `FundingRateUpdate`; unrecognized types are logged as errors.
     pub fn process(&mut self, data: &dyn Any) {
         // TODO: Eventually these could be added to the `Data` enum? process here for now
         if let Some(data) = data.downcast_ref::<Data>() {
@@ -681,6 +638,8 @@ impl DataEngine {
 
         if let Some(instrument) = data.downcast_ref::<InstrumentAny>() {
             self.handle_instrument(instrument.clone());
+        } else if let Some(funding_rate) = data.downcast_ref::<FundingRateUpdate>() {
+            self.handle_funding_rate(*funding_rate);
         } else {
             log::error!("Cannot process data {data:?}, type is unrecognized");
         }
@@ -698,29 +657,6 @@ impl DataEngine {
             Data::MarkPriceUpdate(mark_price) => self.handle_mark_price(mark_price),
             Data::IndexPriceUpdate(index_price) => self.handle_index_price(index_price),
             Data::InstrumentClose(close) => self.handle_instrument_close(close),
-        }
-    }
-
-    /// Processes DeFi-specific data events.
-    #[cfg(feature = "defi")]
-    pub fn process_defi_data(&mut self, data: DefiData) {
-        match data {
-            DefiData::Block(block) => {
-                let topic = switchboard::get_defi_blocks_topic(block.chain());
-                msgbus::publish(topic, &block as &dyn Any);
-            }
-            DefiData::Pool(pool) => {
-                let topic = switchboard::get_defi_pool_topic(pool.address);
-                msgbus::publish(topic, &pool as &dyn Any);
-            }
-            DefiData::PoolSwap(swap) => {
-                let topic = switchboard::get_defi_pool_swaps_topic(swap.pool.address);
-                msgbus::publish(topic, &swap as &dyn Any);
-            }
-            DefiData::PoolLiquidityUpdate(update) => {
-                let topic = switchboard::get_defi_liquidity_topic(update.pool.address);
-                msgbus::publish(topic, &update as &dyn Any);
-            }
         }
     }
 
@@ -764,6 +700,10 @@ impl DataEngine {
         let deltas = if self.config.buffer_deltas {
             if let Some(buffered_deltas) = self.buffered_deltas_map.get_mut(&delta.instrument_id) {
                 buffered_deltas.deltas.push(delta);
+                buffered_deltas.flags = delta.flags;
+                buffered_deltas.sequence = delta.sequence;
+                buffered_deltas.ts_event = delta.ts_event;
+                buffered_deltas.ts_init = delta.ts_init;
             } else {
                 let buffered_deltas = OrderBookDeltas::new(delta.instrument_id, vec![delta]);
                 self.buffered_deltas_map
@@ -800,6 +740,13 @@ impl DataEngine {
 
             if let Some(buffered_deltas) = self.buffered_deltas_map.get_mut(&instrument_id) {
                 buffered_deltas.deltas.extend(deltas.deltas);
+
+                if let Some(last_delta) = buffered_deltas.deltas.last() {
+                    buffered_deltas.flags = last_delta.flags;
+                    buffered_deltas.sequence = last_delta.sequence;
+                    buffered_deltas.ts_event = last_delta.ts_event;
+                    buffered_deltas.ts_init = last_delta.ts_init;
+                }
             } else {
                 self.buffered_deltas_map.insert(instrument_id, deltas);
             }
@@ -898,6 +845,21 @@ impl DataEngine {
         msgbus::publish(topic, &index_price as &dyn Any);
     }
 
+    /// Handles a funding rate update by adding it to the cache and publishing to the message bus.
+    pub fn handle_funding_rate(&mut self, funding_rate: FundingRateUpdate) {
+        if let Err(e) = self
+            .cache
+            .as_ref()
+            .borrow_mut()
+            .add_funding_rate(funding_rate)
+        {
+            log_error_on_cache_insert(&e);
+        }
+
+        let topic = switchboard::get_funding_rate_topic(funding_rate.instrument_id);
+        msgbus::publish(topic, &funding_rate as &dyn Any);
+    }
+
     fn handle_instrument_close(&mut self, close: InstrumentClose) {
         let topic = switchboard::get_instrument_close_topic(close.instrument_id);
         msgbus::publish(topic, &close as &dyn Any);
@@ -910,7 +872,7 @@ impl DataEngine {
             anyhow::bail!("Cannot subscribe for synthetic instrument `OrderBookDelta` data");
         }
 
-        self.setup_order_book(&cmd.instrument_id, cmd.book_type, true, cmd.managed)?;
+        self.setup_book_updater(&cmd.instrument_id, cmd.book_type, true, cmd.managed)?;
 
         Ok(())
     }
@@ -920,7 +882,7 @@ impl DataEngine {
             anyhow::bail!("Cannot subscribe for synthetic instrument `OrderBookDepth10` data");
         }
 
-        self.setup_order_book(&cmd.instrument_id, cmd.book_type, false, cmd.managed)?;
+        self.setup_book_updater(&cmd.instrument_id, cmd.book_type, false, cmd.managed)?;
 
         Ok(())
     }
@@ -951,7 +913,7 @@ impl DataEngine {
         if first_for_interval {
             // Initialize snapshotter and schedule its timer
             let interval_ns = millis_to_nanos(cmd.interval_ms.get() as f64);
-            let topic = switchboard::get_book_snapshots_topic(cmd.instrument_id);
+            let topic = switchboard::get_book_snapshots_topic(cmd.instrument_id, cmd.interval_ms);
 
             let snap_info = BookSnapshotInfo {
                 instrument_id: cmd.instrument_id,
@@ -971,8 +933,9 @@ impl DataEngine {
                 .insert(cmd.instrument_id, snapshotter.clone());
             let timer_name = snapshotter.timer_name;
 
-            let callback =
-                TimeEventCallback::Rust(Rc::new(move |event| snapshotter.snapshot(event)));
+            let callback_fn: Rc<dyn Fn(TimeEvent)> =
+                Rc::new(move |event| snapshotter.snapshot(event));
+            let callback = TimeEventCallback::from(callback_fn);
 
             self.clock
                 .borrow_mut()
@@ -988,7 +951,7 @@ impl DataEngine {
                 .expect(FAILED);
         }
 
-        self.setup_order_book(&cmd.instrument_id, cmd.book_type, false, true)?;
+        self.setup_book_updater(&cmd.instrument_id, cmd.book_type, false, true)?;
 
         Ok(())
     }
@@ -1021,7 +984,7 @@ impl DataEngine {
         let topics = vec![
             switchboard::get_book_deltas_topic(cmd.instrument_id),
             switchboard::get_book_depth10_topic(cmd.instrument_id),
-            switchboard::get_book_snapshots_topic(cmd.instrument_id),
+            // TODO: Unsubscribe from snapshots?
         ];
 
         self.maintain_book_updater(&cmd.instrument_id, &topics);
@@ -1039,7 +1002,7 @@ impl DataEngine {
         let topics = vec![
             switchboard::get_book_deltas_topic(cmd.instrument_id),
             switchboard::get_book_depth10_topic(cmd.instrument_id),
-            switchboard::get_book_snapshots_topic(cmd.instrument_id),
+            // TODO: Unsubscribe from snapshots?
         ];
 
         self.maintain_book_updater(&cmd.instrument_id, &topics);
@@ -1069,7 +1032,7 @@ impl DataEngine {
         let topics = vec![
             switchboard::get_book_deltas_topic(cmd.instrument_id),
             switchboard::get_book_depth10_topic(cmd.instrument_id),
-            switchboard::get_book_snapshots_topic(cmd.instrument_id),
+            // TODO: Unsubscribe from snapshots (add interval_ms to message?)
         ];
 
         self.maintain_book_updater(&cmd.instrument_id, &topics);
@@ -1119,14 +1082,17 @@ impl DataEngine {
 
     fn maintain_book_snapshotter(&mut self, instrument_id: &InstrumentId) {
         if let Some(snapshotter) = self.book_snapshotters.get(instrument_id) {
-            let topic = switchboard::get_book_snapshots_topic(*instrument_id);
+            let topic = switchboard::get_book_snapshots_topic(
+                *instrument_id,
+                snapshotter.snap_info.interval_ms,
+            );
 
             // Check remaining snapshot subscriptions, if none then remove snapshotter
             if msgbus::subscriptions_count(topic.as_str()) == 0 {
                 let timer_name = snapshotter.timer_name;
                 self.book_snapshotters.remove(instrument_id);
                 let mut clock = self.clock.borrow_mut();
-                if clock.timer_names().contains(&timer_name.as_str()) {
+                if clock.timer_exists(&timer_name) {
                     clock.cancel_timer(&timer_name);
                 }
                 log::debug!("Removed BookSnapshotter for instrument ID {instrument_id}");
@@ -1174,7 +1140,7 @@ impl DataEngine {
     // -- INTERNAL --------------------------------------------------------------------------------
 
     #[allow(clippy::too_many_arguments)]
-    fn setup_order_book(
+    fn setup_book_updater(
         &mut self,
         instrument_id: &InstrumentId,
         book_type: BookType,
@@ -1230,17 +1196,22 @@ impl DataEngine {
         let size_precision = instrument.size_precision();
 
         if bar_type.spec().is_time_aggregated() {
+            // Get time_bars_origin_offset from config
+            let time_bars_origin_offset = config
+                .time_bars_origins
+                .get(&bar_type.spec().aggregation)
+                .map(|duration| chrono::TimeDelta::from_std(*duration).unwrap_or_default());
+
             Box::new(TimeBarAggregator::new(
                 bar_type,
                 price_precision,
                 size_precision,
                 clock,
                 handler,
-                false, // await_partial
                 config.time_bars_build_with_no_updates,
                 config.time_bars_timestamp_on_close,
                 config.time_bars_interval_type,
-                None,  // TODO: Implement
+                time_bars_origin_offset,
                 20,    // TODO: TBD, composite bar build delay
                 false, // TODO: skip_first_non_full_bar, make it config dependent
             ))
@@ -1251,24 +1222,28 @@ impl DataEngine {
                     price_precision,
                     size_precision,
                     handler,
-                    false,
                 )) as Box<dyn BarAggregator>,
                 BarAggregation::Volume => Box::new(VolumeBarAggregator::new(
                     bar_type,
                     price_precision,
                     size_precision,
                     handler,
-                    false,
                 )) as Box<dyn BarAggregator>,
                 BarAggregation::Value => Box::new(ValueBarAggregator::new(
                     bar_type,
                     price_precision,
                     size_precision,
                     handler,
-                    false,
+                )) as Box<dyn BarAggregator>,
+                BarAggregation::Renko => Box::new(RenkoBarAggregator::new(
+                    bar_type,
+                    price_precision,
+                    size_precision,
+                    instrument.price_increment(),
+                    handler,
                 )) as Box<dyn BarAggregator>,
                 _ => panic!(
-                    "Cannot create aggregator: {} aggregation not currently supported",
+                    "BarAggregation {:?} is not currently implemented. Supported aggregations: MILLISECOND, SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, YEAR, TICK, VOLUME, VALUE, RENKO",
                     bar_type.spec().aggregation
                 ),
             }

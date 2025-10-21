@@ -14,6 +14,13 @@
 // -------------------------------------------------------------------------------------------------
 
 use alloy::primitives::{Address, I256, U160};
+use nautilus_core::UnixNanos;
+use nautilus_model::{
+    defi::{PoolSwap, SharedChain, SharedDex},
+    enums::OrderSide,
+    identifiers::InstrumentId,
+    types::{Price, Quantity},
+};
 
 /// Represents a token swap event from liquidity pools emitted from smart contract.
 ///
@@ -21,6 +28,10 @@ use alloy::primitives::{Address, I256, U160};
 /// exchanges (DEXs) that use automated market maker (AMM) protocols.
 #[derive(Debug, Clone)]
 pub struct SwapEvent {
+    /// The decentralized exchange where the event happened.
+    pub dex: SharedDex,
+    /// The address of the smart contract which emitted the event.
+    pub pool_address: Address,
     /// The block number in which this swap transaction was included.
     pub block_number: u64,
     /// The unique hash identifier of the transaction containing this event.
@@ -42,6 +53,10 @@ pub struct SwapEvent {
     /// The square root of the price ratio encoded as a Q64.96 fixed-point number.
     /// This represents the price of token1 in terms of token0 after the swap.
     pub sqrt_price_x96: U160,
+    /// The liquidity of the pool after the swap occurred.
+    pub liquidity: u128,
+    /// The current tick of the pool after the swap occurred.
+    pub tick: i32,
 }
 
 impl SwapEvent {
@@ -49,6 +64,8 @@ impl SwapEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
+        dex: SharedDex,
+        pool_address: Address,
         block_number: u64,
         transaction_hash: String,
         transaction_index: u32,
@@ -58,8 +75,12 @@ impl SwapEvent {
         amount0: I256,
         amount1: I256,
         sqrt_price_x96: U160,
+        liquidity: u128,
+        tick: i32,
     ) -> Self {
         Self {
+            dex,
+            pool_address,
             block_number,
             transaction_hash,
             transaction_index,
@@ -69,6 +90,44 @@ impl SwapEvent {
             amount0,
             amount1,
             sqrt_price_x96,
+            liquidity,
+            tick,
         }
+    }
+
+    /// Converts a swap event into a `PoolSwap`.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn to_pool_swap(
+        &self,
+        chain: SharedChain,
+        instrument_id: InstrumentId,
+        pool_address: Address,
+        normalized_side: Option<OrderSide>,
+        normalized_quantity: Option<Quantity>,
+        normalized_price: Option<Price>,
+        timestamp: Option<UnixNanos>,
+    ) -> PoolSwap {
+        PoolSwap::new(
+            chain,
+            self.dex.clone(),
+            instrument_id,
+            pool_address,
+            self.block_number,
+            self.transaction_hash.clone(),
+            self.transaction_index,
+            self.log_index,
+            timestamp,
+            self.sender,
+            self.receiver,
+            self.amount0,
+            self.amount1,
+            self.sqrt_price_x96,
+            self.liquidity,
+            self.tick,
+            normalized_side,
+            normalized_quantity,
+            normalized_price,
+        )
     }
 }
